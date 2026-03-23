@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Send } from "lucide-react";
+import { ArrowLeft, Send, MessageSquare, ChevronLeft, ChevronRight } from "lucide-react";
 import Link from "next/link";
 
 interface SubscriberDetail {
@@ -21,15 +21,39 @@ interface SubscriberDetail {
   created_at: string | null;
 }
 
+interface InteractionLog {
+  id: number;
+  phone: string;
+  direction: string;
+  msg_type: string;
+  content: string;
+  command: string;
+  timestamp: string;
+}
+
+interface LogsResponse {
+  subscriber: Record<string, unknown>;
+  logs: InteractionLog[];
+  total: number;
+}
+
 export default function SubscriberDetailPage({ params }: { params: Promise<{ phone: string }> }) {
   const { phone } = use(params);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<string | null>(null);
+  const [logPage, setLogPage] = useState(1);
+  const logsPerPage = 20;
 
   const { data: sub, error } = useSWR<SubscriberDetail>(
     `/api/subscribers/${phone}`,
     fetcher
+  );
+
+  const { data: logsData } = useSWR<LogsResponse>(
+    `/api/logs/subscriber/${phone}?limit=${logsPerPage}&offset=${(logPage - 1) * logsPerPage}`,
+    fetcher,
+    { refreshInterval: 10000 }
   );
 
   async function handleSend() {
@@ -53,8 +77,10 @@ export default function SubscriberDetailPage({ params }: { params: Promise<{ pho
   if (error) return <p className="text-red-500">Subscriber not found</p>;
   if (!sub) return <p className="text-slate-400">Loading...</p>;
 
+  const totalLogPages = logsData ? Math.ceil(logsData.total / logsPerPage) : 0;
+
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6 max-w-4xl">
       <Link href="/subscribers" className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900">
         <ArrowLeft className="h-4 w-4" /> Back to subscribers
       </Link>
@@ -73,7 +99,7 @@ export default function SubscriberDetailPage({ params }: { params: Promise<{ pho
             </div>
             <div>
               <p className="text-slate-500">Company</p>
-              <p>{sub.company_name || "—"}</p>
+              <p>{sub.company_name || "\u2014"}</p>
             </div>
             <div>
               <p className="text-slate-500">Sector</p>
@@ -88,6 +114,10 @@ export default function SubscriberDetailPage({ params }: { params: Promise<{ pho
             <div>
               <p className="text-slate-500">Joined</p>
               <p>{formatDate(sub.created_at)}</p>
+            </div>
+            <div>
+              <p className="text-slate-500">Total Interactions</p>
+              <p className="font-semibold">{logsData?.total ?? "..."}</p>
             </div>
           </div>
         </CardContent>
@@ -114,6 +144,72 @@ export default function SubscriberDetailPage({ params }: { params: Promise<{ pho
             <p className={`text-sm mt-2 ${sendResult.startsWith("Failed") ? "text-red-500" : "text-green-600"}`}>
               {sendResult}
             </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Interaction History */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <MessageSquare className="h-5 w-5" />
+            Interaction History
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!logsData ? (
+            <p className="text-slate-400 py-4">Loading interactions...</p>
+          ) : logsData.logs.length === 0 ? (
+            <p className="text-slate-400 py-4 text-center">No interactions recorded yet</p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                {logsData.logs.map((log) => (
+                  <div
+                    key={log.id}
+                    className={`flex gap-3 p-3 rounded-lg text-sm ${
+                      log.direction === "inbound"
+                        ? "bg-blue-50 border border-blue-100"
+                        : "bg-slate-50 border border-slate-100"
+                    }`}
+                  >
+                    <div className="flex-shrink-0 pt-0.5">
+                      <Badge variant={log.direction === "inbound" ? "default" : "outline"} className="text-xs">
+                        {log.direction === "inbound" ? "IN" : "OUT"}
+                      </Badge>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        {log.command && (
+                          <Badge variant="secondary" className="text-xs">{log.command}</Badge>
+                        )}
+                        <span className="text-xs text-slate-400">{log.msg_type}</span>
+                      </div>
+                      <p className="text-slate-700 break-words">{log.content || "(no content)"}</p>
+                    </div>
+                    <div className="flex-shrink-0 text-xs text-slate-400 whitespace-nowrap">
+                      {log.timestamp.replace("T", " ").slice(0, 19)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {totalLogPages > 1 && (
+                <div className="flex items-center justify-between mt-4">
+                  <p className="text-sm text-slate-500">
+                    Page {logPage} of {totalLogPages} ({logsData.total} interactions)
+                  </p>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" disabled={logPage <= 1} onClick={() => setLogPage(logPage - 1)}>
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    <Button variant="outline" size="sm" disabled={logPage >= totalLogPages} onClick={() => setLogPage(logPage + 1)}>
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>

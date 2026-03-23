@@ -81,6 +81,7 @@ async def list_logs(
 async def get_subscriber_logs(
     phone: str,
     limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     _admin: str = Depends(get_current_admin),
 ):
     """Get all interaction logs for a specific subscriber."""
@@ -88,7 +89,14 @@ async def get_subscriber_logs(
     if not sub:
         raise HTTPException(status_code=404, detail="Subscriber not found")
 
-    logs = get_interaction_logs(phone=phone, limit=limit)
+    logs = get_interaction_logs(phone=phone, limit=limit, offset=offset)
+    # Get total count for pagination
+    from database import get_conn
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM interaction_logs WHERE phone = ?", (phone,))
+    total = c.fetchone()[0]
+    conn.close()
     return {
         "subscriber": {
             "phone": sub["phone"],
@@ -97,7 +105,7 @@ async def get_subscriber_logs(
             "active": bool(sub.get("active")),
         },
         "logs": [InteractionLog(**log) for log in logs],
-        "total": len(logs),
+        "total": total,
     }
 
 

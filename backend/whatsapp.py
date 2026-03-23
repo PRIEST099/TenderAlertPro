@@ -13,6 +13,15 @@ For TenderAlert Pro:
 import requests
 from config import WHATSAPP_TOKEN, WHATSAPP_API_URL, WHATSAPP_PHONE_NUMBER_ID
 
+
+def _log_outbound(phone: str, msg_type: str, content: str, command: str = ""):
+    """Log an outbound message to the interaction_logs table."""
+    try:
+        from database import log_interaction
+        log_interaction(phone, direction="outbound", msg_type=msg_type, content=content, command=command)
+    except Exception:
+        pass  # Don't let logging failures break message sending
+
 # Name of the approved Meta template used for outbound tender alerts.
 # "hello_world" ships with every Meta account — use it for connection tests.
 # Replace with "tender_daily_alert" once you create and get that template approved.
@@ -69,6 +78,7 @@ def send_text(phone: str, message: str) -> bool:
             msg_id = data.get("messages", [{}])[0].get("id", "unknown")
             print(f"[whatsapp] API accepted message to {phone} (id: {msg_id[:30]}...)")
             print(f"[whatsapp] NOTE: API acceptance != delivery. Check phone for the message.")
+            _log_outbound(phone, "text", message[:200])
             return True
 
         # Parse and surface useful error info
@@ -127,6 +137,7 @@ def send_template(phone: str, template_name: str, lang: str = "en_US", component
         if resp.status_code == 200:
             msg_id = data.get("messages", [{}])[0].get("id", "")
             print(f"[whatsapp] Template '{template_name}' sent to {phone} (id: {msg_id[:30]}...)")
+            _log_outbound(phone, "template", f"template:{template_name}", command="daily_alert")
             return True
         err = data.get("error", {})
         print(f"[whatsapp] Template send failed: {err.get('code')} — {err.get('message')}")
@@ -259,6 +270,7 @@ def send_sector_list(phone: str) -> bool:
         resp = requests.post(WHATSAPP_API_URL, json=payload, headers=headers, timeout=15)
         if resp.status_code == 200:
             print(f"[whatsapp] Sector list sent to {phone}")
+            _log_outbound(phone, "list", "sector_picker", command="sector_list")
             return True
         print(f"[whatsapp] Sector list failed: {resp.json().get('error', {}).get('message')}")
         return False
@@ -297,6 +309,7 @@ def send_buttons(phone: str, body: str, buttons: list[str]) -> bool:
         resp = requests.post(WHATSAPP_API_URL, json=payload, headers=headers, timeout=15)
         if resp.status_code == 200:
             print(f"[whatsapp] Buttons sent to {phone}")
+            _log_outbound(phone, "buttons", f"buttons:{','.join(buttons)}", command="buttons")
             return True
         print(f"[whatsapp] send_buttons failed: {resp.json().get('error', {}).get('message')}")
         return False
@@ -353,6 +366,7 @@ def send_tender_list(phone: str, tenders: list[dict]) -> bool:
         resp = requests.post(WHATSAPP_API_URL, json=payload, headers=headers, timeout=15)
         if resp.status_code == 200:
             print(f"[whatsapp] Tender list ({len(rows)} items) sent to {phone}")
+            _log_outbound(phone, "list", f"tender_list:{len(rows)}_items", command="tender_list")
             return True
         print(f"[whatsapp] Tender list failed: {resp.json().get('error', {}).get('message')}")
         return False
