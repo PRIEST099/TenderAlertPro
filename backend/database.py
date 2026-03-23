@@ -44,10 +44,11 @@ def init_db():
         )
     """)
 
-    # Migrate existing DBs that predate these two columns
+    # Migrate existing DBs that predate these columns
     for col, definition in [
         ("company_name",    "TEXT DEFAULT ''"),
         ("onboarding_step", "TEXT DEFAULT 'awaiting_name'"),
+        ("tags",            "TEXT DEFAULT ''"),  # tenders: AI-assigned sector tags (comma-separated)
     ]:
         try:
             c.execute(f"ALTER TABLE subscribers ADD COLUMN {col} {definition}")
@@ -176,12 +177,20 @@ def get_tenders_for_subscriber(phone: str, since_hours: int = 48) -> list:
     if sectors == "all":
         return tenders
 
-    return [t for t in tenders if sectors.lower() in (t.get("category") or "").lower()]
+    sector = sectors.lower()
+    return [
+        t for t in tenders
+        if sector in (t.get("category") or "").lower()
+        or sector in (t.get("tags") or "").lower()
+    ]
 
 
-def save_ai_summary(ocid: str, summary: str):
+def save_ai_summary(ocid: str, summary: str, tags: str = ""):
     conn = get_conn()
     c = conn.cursor()
-    c.execute("UPDATE tenders SET ai_summary = ? WHERE ocid = ?", (summary, ocid))
+    if tags:
+        c.execute("UPDATE tenders SET ai_summary = ?, tags = ? WHERE ocid = ?", (summary, tags, ocid))
+    else:
+        c.execute("UPDATE tenders SET ai_summary = ? WHERE ocid = ?", (summary, ocid))
     conn.commit()
     conn.close()

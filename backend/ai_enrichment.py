@@ -47,6 +47,15 @@ CHECKLIST:
 DIFFICULTY: [Easy / Medium / Hard]
 Easy = any registered SME can apply | Medium = need proven experience + specific docs | Hard = large firm + specialized certifications required
 
+SECTORS: [comma-separated list from ONLY these options: ict, construction, health, education, agriculture, consulting, supply]
+Assign 1-3 sectors that best match this tender. Examples:
+- Software development → ict
+- Road construction → construction
+- Hospital equipment → health, supply
+- School renovation → education, construction
+- Farm inputs → agriculture, supply
+- Audit services → consulting
+
 ---
 Tender Title: {tender['title']}
 Buyer: {tender['buyer_name']}
@@ -56,30 +65,58 @@ Deadline: {deadline}
 Description: {description or 'No description provided.'}"""
 
 
-def enrich_tender(tender: dict) -> str | None:
+VALID_SECTORS = {"ict", "construction", "health", "education", "agriculture", "consulting", "supply"}
+
+
+def parse_sectors_from_response(text: str) -> str:
+    """Extract SECTORS: line from Claude's response and return cleaned comma-separated tags."""
+    for line in text.splitlines():
+        if line.strip().upper().startswith("SECTORS:"):
+            raw = line.split(":", 1)[1].strip()
+            # Parse comma-separated, validate each against known sectors
+            tags = [s.strip().lower() for s in raw.split(",")]
+            valid = [t for t in tags if t in VALID_SECTORS]
+            return ",".join(valid) if valid else ""
+    return ""
+
+
+def strip_sectors_line(text: str) -> str:
+    """Remove the SECTORS: line from the response (don't show it to users)."""
+    lines = []
+    for line in text.splitlines():
+        if not line.strip().upper().startswith("SECTORS:"):
+            lines.append(line)
+    # Clean trailing whitespace
+    return "\n".join(lines).strip()
+
+
+def enrich_tender(tender: dict) -> tuple[str | None, str]:
     """
-    Call Claude to generate an AI summary for a single tender.
-    Returns the formatted string on success, None on failure.
+    Call Claude to generate an AI summary + sector tags for a single tender.
+    Returns (summary_text, tags_csv) on success, (None, "") on failure.
     """
     if not ANTHROPIC_API_KEY:
         print("[ai] ANTHROPIC_API_KEY not set — skipping enrichment.")
-        return None
+        return None, ""
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     try:
         message = client.messages.create(
             model=MODEL,
-            max_tokens=500,
+            max_tokens=600,
             messages=[{"role": "user", "content": build_prompt(tender)}],
         )
-        return message.content[0].text.strip()
+        full_response = message.content[0].text.strip()
+        tags = parse_sectors_from_response(full_response)
+        summary = strip_sectors_line(full_response)
+        return summary, tags
     except anthropic.APIError as e:
         print(f"[ai] API error for {tender.get('ocid')}: {e}")
-        return None
+        return None, ""
     except Exception as e:
         print(f"[ai] Unexpected error for {tender.get('ocid')}: {e}")
-        return None
+        return None, ""
 
 
 def get_unenriched_tenders(limit: int = ENRICH_BATCH_SIZE) -> list[dict]:
@@ -121,11 +158,12 @@ def enrich_new_tenders(limit: int = ENRICH_BATCH_SIZE) -> int:
     for t in tenders:
         short_title = t["title"][:60] + ("..." if len(t["title"]) > 60 else "")
         print(f"[ai] → {short_title}")
-        summary = enrich_tender(t)
+        summary, tags = enrich_tender(t)
         if summary:
-            save_ai_summary(t["ocid"], summary)
+            save_ai_summary(t["ocid"], summary, tags=tags)
             enriched += 1
-            print(f"[ai]   ✓ Enriched ({enriched}/{len(tenders)})")
+            tag_info = f" [tags: {tags}]" if tags else ""
+            print(f"[ai]   ✓ Enriched ({enriched}/{len(tenders)}){tag_info}")
         else:
             print(f"[ai]   ✗ Failed — skipping")
 
@@ -165,11 +203,13 @@ def preview_enrichment(n: int = 3):
         print(f"     Deadline : {deadline}")
         print(f"\n  ⏳ Calling Claude...")
 
-        summary = enrich_tender(t)
+        summary, tags = enrich_tender(t)
         if summary:
             print(f"\n  📋 AI Analysis:\n")
             for line in summary.splitlines():
                 print(f"     {line}")
+            if tags:
+                print(f"\n  🏷️  Sectors: {tags}")
         else:
             print("  ✗ Enrichment failed.")
         print()

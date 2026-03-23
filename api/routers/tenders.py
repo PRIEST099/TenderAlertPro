@@ -80,8 +80,9 @@ async def enrich_tender_endpoint(ocid: str, _admin: str = Depends(get_current_ad
     from ai_enrichment import enrich_tender  # noqa: E402
     from database import save_ai_summary  # noqa: E402
 
-    summary = enrich_tender(tender)
+    summary, tags = enrich_tender(tender)
     if summary:
-        save_ai_summary(ocid, summary)
-        return OperationResult(success=True, message="Tender enriched successfully", count=1)
+        save_ai_summary(ocid, summary, tags=tags)
+        tag_msg = f" [sectors: {tags}]" if tags else ""
+        return OperationResult(success=True, message=f"Tender enriched successfully{tag_msg}", count=1)
     raise HTTPException(status_code=502, detail="AI enrichment failed — check Anthropic API key")

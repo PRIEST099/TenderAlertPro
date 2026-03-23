@@ -55,6 +55,7 @@ def run_daily_job():
             else [
                 t for t in all_new
                 if sectors.lower() in (t.get("category") or "").lower()
+                or sectors.lower() in (t.get("tags") or "").lower()
             ]
         )
 
