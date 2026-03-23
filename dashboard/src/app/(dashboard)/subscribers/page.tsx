@@ -14,6 +14,7 @@ import { Download, ChevronLeft, ChevronRight, UserPlus } from "lucide-react";
 
 interface Subscriber {
   id: number;
+  phone: string;
   phone_masked: string;
   company_name: string;
   sectors: string;
@@ -180,7 +181,7 @@ export default function SubscribersPage() {
                 {data.items.map((sub) => (
                   <tr key={sub.id} className="hover:bg-slate-50 cursor-pointer">
                     <td className="px-6 py-4">
-                      <Link href={`/subscribers/${sub.phone_masked}`} className="font-medium text-blue-600 hover:underline">
+                      <Link href={`/subscribers/${sub.phone}`} className="font-medium text-blue-600 hover:underline">
                         {sub.company_name || "—"}
                       </Link>
                     </td>

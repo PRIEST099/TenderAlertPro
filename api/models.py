@@ -55,6 +55,7 @@ class StatsResponse(BaseModel):
 class SubscriberOut(BaseModel):
     """Subscriber with masked phone (for list views)."""
     id: int
+    phone: str
     phone_masked: str
     company_name: str
     sectors: str

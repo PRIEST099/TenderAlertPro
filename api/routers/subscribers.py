@@ -32,6 +32,7 @@ async def list_subscribers(
     items = [
         SubscriberOut(
             id=r["id"],
+            phone=r.get("phone", ""),
             phone_masked=r["phone_masked"],
             company_name=r.get("company_name", ""),
             sectors=r.get("sectors", "all"),
