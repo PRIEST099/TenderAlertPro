@@ -1,13 +1,11 @@
 """
 webhook.py — WhatsApp webhook logic for TenderAlert Pro.
 
-Handles:
-  - Onboarding wizard (name → sector → complete)
-  - Name update flow (awaiting_name_update)
-  - Template button replies (View Tenders, Change Sector, Stop Alerts)
-  - Interactive list replies (sector selection)
-  - Text commands (HELP, STATUS, LIST, SEARCH, SECTORS, NAME, STOP, greetings)
-  - Unsubscribe confirmation (2-button "are you sure?")
+Key design:
+  - Every response includes quick-reply buttons so users never need to type
+  - Onboarding detects commands (hi, hello, help) and doesn't save them as company name
+  - Returning users are recognized by phone number lookup, not re-onboarded
+  - Unsubscribe requires confirmation (2-button "are you sure?")
 
 Pure Python — no framework dependency. Called by api/routers/webhook.py.
 """
@@ -39,6 +37,15 @@ SECTOR_LABELS = {
     "all": "All Sectors",
 }
 
+# Words that should NOT be treated as a company name during onboarding
+KNOWN_COMMANDS = {
+    "hi", "hello", "hey", "start", "join", "subscribe",
+    "help", "stop", "quit", "cancel", "unsubscribe",
+    "status", "me", "profile", "sectors", "sector",
+    "list", "tenders", "latest", "new", "today",
+    "name", "change name", "change sector",
+}
+
 HELP_TEXT = (
     "*TenderAlert Pro — Commands*\n\n"
     "📋 *LIST* — See latest tenders in your sector\n"
@@ -50,29 +57,23 @@ HELP_TEXT = (
     "❓ *HELP* — Show this menu"
 )
 
-QUICK_HELP = (
-    "I didn't recognise that command. Here's what I can do:\n\n"
-    "📋 *LIST* — Latest tenders\n"
-    "🔍 *SEARCH <word>* — Find tenders\n"
-    "👤 *STATUS* — Your subscription\n"
-    "📂 *SECTORS* — Change sector\n"
-    "❓ *HELP* — All commands"
-)
+# Standard button sets for common responses
+MAIN_BUTTONS = ["View Tenders", "My Status", "Help"]
+AFTER_ACTION_BUTTONS = ["View Tenders", "Change Sector", "Help"]
+AFTER_TENDERS_BUTTONS = ["Change Sector", "My Status", "Help"]
 
-# Button titles — must match template buttons exactly (lowercased)
-# tender_update template:
+# Button titles from templates + confirmation
 BTN_VIEW_TENDERS   = "view tenders"
 BTN_CHANGE_SECTOR  = "change sector"
 BTN_STOP_ALERTS    = "stop alerts"
-# procurement_notice template (legacy):
 BTN_GET_DIGEST_ALT     = "get today's digest"
 BTN_CHANGE_SECTORS_ALT = "change my sectors"
 BTN_UNSUBSCRIBE_ALT    = "unsubscribe"
-# Unsubscribe confirmation buttons:
 BTN_CONFIRM_UNSUB  = "yes, unsubscribe"
 BTN_KEEP_ALERTS    = "no, keep alerts"
-# Welcome template:
 BTN_GET_STARTED    = "get started"
+BTN_MY_STATUS      = "my status"
+BTN_HELP           = "help"
 
 
 # ── Payload parsing ───────────────────────────────────────────────────────
@@ -113,17 +114,15 @@ def parse_message(entry: dict) -> tuple[str, str]:
 
 def handle_onboarding(phone: str, msg_type: str, content: str, sub: dict | None):
     """
-    Drive new users through onboarding and handle name-update flow.
+    Drive new users through onboarding. Recognizes returning users by phone.
 
-    Steps:
-      None (new user)       → ask for company name
-      awaiting_name         → save name, show sector picker
-      awaiting_sector       → save sector, mark complete
-      awaiting_name_update  → save updated name, back to complete (skip sector)
+    Key fix: if user sends a known command (hi, hello, help) during awaiting_name,
+    don't save it as their company name — route them properly instead.
     """
     step = sub["onboarding_step"] if sub else None
+    content_lower = content.lower().strip() if content else ""
 
-    # ── Brand new user ──
+    # ── Brand new user (not in DB at all) ──
     if sub is None:
         add_subscriber(phone, onboarding_step="awaiting_name")
         send_text(
@@ -135,9 +134,36 @@ def handle_onboarding(phone: str, msg_type: str, content: str, sub: dict | None)
         )
         return
 
-    # ── Awaiting company name (initial onboarding) ──
+    # ── Awaiting company name ──
     if step == "awaiting_name":
-        company = content.strip() if content else "Unknown"
+        # If user sends a greeting or command instead of a name, don't save it as name
+        if content_lower in KNOWN_COMMANDS or content_lower.startswith("search "):
+            # Check if they already have a company name from a previous session
+            existing_name = sub.get("company_name", "").strip()
+            if existing_name:
+                # They're a returning user — skip onboarding, mark complete
+                update_subscriber(phone, onboarding_step="complete")
+                company = existing_name
+                sector = SECTOR_LABELS.get(sub.get("sectors", "all"), "All Sectors")
+                send_text(
+                    phone,
+                    f"Welcome back, *{company}*! 👋\n\n"
+                    f"Your sector: *{sector}*\n\n"
+                    f"How can I help you today?"
+                )
+                send_buttons(phone, "Choose an action:", MAIN_BUTTONS)
+                return
+            else:
+                # Genuinely new user who typed "hello" instead of their name
+                send_text(
+                    phone,
+                    "I'd love to help! But first, I need your *company or organisation name* to get you set up.\n\n"
+                    "Just type it below:"
+                )
+                return
+
+        # Valid company name — save and proceed
+        company = content.strip()
         update_subscriber(phone, company_name=company, onboarding_step="awaiting_sector")
         send_text(phone, f"Nice to meet you, *{company}*! 👋\n\nNow choose the sector you want tender alerts for:")
         send_sector_list(phone)
@@ -145,9 +171,8 @@ def handle_onboarding(phone: str, msg_type: str, content: str, sub: dict | None)
 
     # ── Awaiting sector selection ──
     if step == "awaiting_sector":
-        sector = content.lower() if content else ""
+        sector = content_lower
         if sector not in VALID_SECTORS:
-            # Don't silently default — ask again
             send_text(phone, "I didn't recognise that sector. Please tap one of the options below:")
             send_sector_list(phone)
             return
@@ -157,18 +182,25 @@ def handle_onboarding(phone: str, msg_type: str, content: str, sub: dict | None)
         send_text(
             phone,
             f"✅ *You're all set!*\n\n"
-            f"Sector: *{label}*\n\n"
-            f"You'll receive a daily morning alert (08:00 Kigali time) every time new "
-            f"Rwanda government tenders are published in your sector.\n\n"
-            f"Reply *HELP* anytime to see available commands."
+            f"Sector: *{label}*\n"
+            f"Alerts: Every morning at *08:00 Kigali time*\n\n"
+            f"What would you like to do first?"
         )
+        send_buttons(phone, "Choose an action:", ["View Tenders", "My Status", "Help"])
         return
 
-    # ── Awaiting name update (existing user changing their name) ──
+    # ── Awaiting name update (existing user changing name) ──
     if step == "awaiting_name_update":
-        company = content.strip() if content else "Unknown"
+        if content_lower in KNOWN_COMMANDS:
+            update_subscriber(phone, onboarding_step="complete")
+            send_text(phone, "Name update cancelled.")
+            send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
+            return
+
+        company = content.strip()
         update_subscriber(phone, company_name=company, onboarding_step="complete")
         send_text(phone, f"✅ Updated! Your company name is now *{company}*.")
+        send_buttons(phone, "What's next?", AFTER_ACTION_BUTTONS)
         return
 
 
@@ -182,9 +214,12 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
     if button_title in (BTN_VIEW_TENDERS, BTN_GET_DIGEST_ALT, BTN_GET_STARTED):
         tenders = get_tenders_for_subscriber(phone, since_hours=48)
         if tenders:
-            send_tender_digest(phone, tenders, use_template=False)
+            message = format_tender_alert(tenders, subscriber_name=sub.get("company_name"))
+            send_text(phone, message)
+            send_buttons(phone, "What's next?", AFTER_TENDERS_BUTTONS)
         else:
             send_text(phone, "No new tenders in your sector in the last 48 hours. Check back tomorrow morning! ☀️")
+            send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
 
     # Change sector
     elif button_title in (BTN_CHANGE_SECTOR, BTN_CHANGE_SECTORS_ALT):
@@ -192,7 +227,7 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
         send_text(phone, "No problem! Select a new sector below:")
         send_sector_list(phone)
 
-    # Stop alerts / Unsubscribe — ask for confirmation
+    # Stop alerts — ask for confirmation
     elif button_title in (BTN_STOP_ALERTS, BTN_UNSUBSCRIBE_ALT):
         send_buttons(
             phone,
@@ -209,12 +244,24 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
             "Message us anytime to rejoin — we'll be here! 👋"
         )
 
-    # Unsubscribe confirmation: NO (keep alerts)
+    # Unsubscribe confirmation: NO
     elif button_title == BTN_KEEP_ALERTS:
-        send_text(phone, "Great, your alerts are still active! ✅\n\nReply *HELP* to see available commands.")
+        send_text(phone, "Great, your alerts are still active! ✅")
+        send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
+
+    # My Status button
+    elif button_title == BTN_MY_STATUS:
+        send_text(phone, format_status_message(sub))
+        send_buttons(phone, "What's next?", AFTER_ACTION_BUTTONS)
+
+    # Help button
+    elif button_title == BTN_HELP:
+        send_text(phone, HELP_TEXT)
+        send_buttons(phone, "Quick actions:", MAIN_BUTTONS)
 
     else:
-        send_text(phone, QUICK_HELP)
+        send_text(phone, "I didn't recognise that button. Here's what I can do:")
+        send_buttons(phone, "Choose an action:", MAIN_BUTTONS)
 
 
 # ── Text command handlers ─────────────────────────────────────────────────
@@ -227,10 +274,12 @@ def handle_text(phone: str, text: str, sub: dict):
     # ── HELP ──
     if text_lower == "help":
         send_text(phone, HELP_TEXT)
+        send_buttons(phone, "Quick actions:", MAIN_BUTTONS)
 
     # ── STATUS / ME / PROFILE ──
     elif text_lower in ("status", "me", "profile", "my profile", "my status"):
         send_text(phone, format_status_message(sub))
+        send_buttons(phone, "What's next?", AFTER_ACTION_BUTTONS)
 
     # ── SECTORS / CHANGE SECTOR ──
     elif text_lower in ("sectors", "sector", "change sector", "change sectors"):
@@ -249,19 +298,23 @@ def handle_text(phone: str, text: str, sub: dict):
         if tenders:
             message = format_tender_alert(tenders, subscriber_name=sub.get("company_name"))
             send_text(phone, message)
+            send_buttons(phone, "What's next?", AFTER_TENDERS_BUTTONS)
         else:
             send_text(phone, "No new tenders in your sector in the last 48 hours.\n\nTry *SEARCH <keyword>* to find specific tenders.")
+            send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
 
     # ── SEARCH <keyword> ──
     elif text_lower.startswith("search "):
-        keyword = text[7:].strip()  # preserve original case for display
+        keyword = text[7:].strip()
         if len(keyword) < 2:
             send_text(phone, "Please provide a keyword to search.\n\nExample: *search construction*")
+            send_buttons(phone, "Or try:", MAIN_BUTTONS)
         else:
             results = search_tenders(keyword, limit=5)
             send_text(phone, format_search_results(results, keyword))
+            send_buttons(phone, "What's next?", AFTER_TENDERS_BUTTONS)
 
-    # ── STOP / UNSUBSCRIBE ── (with confirmation)
+    # ── STOP / UNSUBSCRIBE (with confirmation) ──
     elif text_lower in ("stop", "unsubscribe", "quit", "cancel"):
         send_buttons(
             phone,
@@ -276,13 +329,18 @@ def handle_text(phone: str, text: str, sub: dict):
         send_text(
             phone,
             f"Welcome back, *{company}*! 👋\n\n"
-            f"Your sector: *{sector}*\n\n"
-            f"Reply *LIST* to see today's tenders, or *HELP* for all commands."
+            f"Your sector: *{sector}*"
         )
+        send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
 
     # ── UNKNOWN COMMAND ──
     else:
-        send_text(phone, QUICK_HELP)
+        send_text(
+            phone,
+            "I didn't recognise that command.\n\n"
+            "Try one of the buttons below, or type *HELP* for all commands."
+        )
+        send_buttons(phone, "Choose an action:", MAIN_BUTTONS)
 
 
 # ── Main dispatcher ───────────────────────────────────────────────────────
@@ -301,7 +359,6 @@ def process_webhook_entry(entry: dict):
     step = sub["onboarding_step"] if sub else None
 
     # ── Onboarding gate ──
-    # New user OR mid-onboarding OR name update: drive the wizard
     if sub is None or step in ("awaiting_name", "awaiting_sector", "awaiting_name_update"):
         handle_onboarding(phone, msg_type, content, sub)
         return
@@ -311,11 +368,11 @@ def process_webhook_entry(entry: dict):
         handle_button_reply(phone, content, sub)
 
     elif msg_type == "list_reply":
-        # Sector list selection (from "Change Sector" or onboarding)
         sector = content if content in VALID_SECTORS else "all"
         label = SECTOR_LABELS.get(sector, "All Sectors")
         update_subscriber(phone, sectors=sector, onboarding_step="complete")
         send_text(phone, f"✅ Updated! You'll now receive alerts for *{label}*.")
+        send_buttons(phone, "What's next?", AFTER_ACTION_BUTTONS)
 
     elif msg_type == "text" and content:
         handle_text(phone, content, sub)
