@@ -1,7 +1,15 @@
 """
-webhook.py — WhatsApp webhook logic extracted from bot.py.
-Pure Python functions with no Flask/FastAPI dependency.
-Called by api/routers/webhook.py (FastAPI routes).
+webhook.py — WhatsApp webhook logic for TenderAlert Pro.
+
+Handles:
+  - Onboarding wizard (name → sector → complete)
+  - Name update flow (awaiting_name_update)
+  - Template button replies (View Tenders, Change Sector, Stop Alerts)
+  - Interactive list replies (sector selection)
+  - Text commands (HELP, STATUS, LIST, SEARCH, SECTORS, NAME, STOP, greetings)
+  - Unsubscribe confirmation (2-button "are you sure?")
+
+Pure Python — no framework dependency. Called by api/routers/webhook.py.
 """
 
 import sys
@@ -11,18 +19,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
 from database import (  # noqa: E402
     add_subscriber, remove_subscriber, get_subscriber,
-    update_subscriber, get_new_tenders, init_db,
+    update_subscriber, get_new_tenders, search_tenders,
+    get_tenders_for_subscriber, init_db,
 )
-from whatsapp import send_text, send_sector_list, send_tender_digest  # noqa: E402
+from whatsapp import (  # noqa: E402
+    send_text, send_sector_list, send_buttons, send_tender_digest,
+    format_tender_alert, format_status_message, format_search_results,
+)
 
 VALID_SECTORS = ["ict", "construction", "health", "education", "agriculture", "consulting", "supply", "all"]
-
-HELP_TEXT = (
-    "*TenderAlert Pro — Commands*\n\n"
-    "• *STOP* — Unsubscribe\n"
-    "• *SECTORS* — Change your sector filter\n"
-    "• *HELP* — Show this menu"
-)
 
 SECTOR_LABELS = {
     "ict": "ICT & Technology",
@@ -34,15 +39,40 @@ SECTOR_LABELS = {
     "all": "All Sectors",
 }
 
+HELP_TEXT = (
+    "*TenderAlert Pro — Commands*\n\n"
+    "📋 *LIST* — See latest tenders in your sector\n"
+    "🔍 *SEARCH <keyword>* — Find specific tenders\n"
+    "👤 *STATUS* — View your subscription info\n"
+    "📂 *SECTORS* — Change your sector filter\n"
+    "✏️ *NAME* — Update your company name\n"
+    "❌ *STOP* — Unsubscribe\n"
+    "❓ *HELP* — Show this menu"
+)
+
+QUICK_HELP = (
+    "I didn't recognise that command. Here's what I can do:\n\n"
+    "📋 *LIST* — Latest tenders\n"
+    "🔍 *SEARCH <word>* — Find tenders\n"
+    "👤 *STATUS* — Your subscription\n"
+    "📂 *SECTORS* — Change sector\n"
+    "❓ *HELP* — All commands"
+)
+
 # Button titles — must match template buttons exactly (lowercased)
-# tender_update template buttons:
-BTN_GET_DIGEST     = "view tenders"
-BTN_CHANGE_SECTORS = "change sector"
-BTN_UNSUBSCRIBE    = "stop alerts"
-# Also match old procurement_notice buttons (in case both are active)
+# tender_update template:
+BTN_VIEW_TENDERS   = "view tenders"
+BTN_CHANGE_SECTOR  = "change sector"
+BTN_STOP_ALERTS    = "stop alerts"
+# procurement_notice template (legacy):
 BTN_GET_DIGEST_ALT     = "get today's digest"
 BTN_CHANGE_SECTORS_ALT = "change my sectors"
 BTN_UNSUBSCRIBE_ALT    = "unsubscribe"
+# Unsubscribe confirmation buttons:
+BTN_CONFIRM_UNSUB  = "yes, unsubscribe"
+BTN_KEEP_ALERTS    = "no, keep alerts"
+# Welcome template:
+BTN_GET_STARTED    = "get started"
 
 
 # ── Payload parsing ───────────────────────────────────────────────────────
@@ -64,7 +94,7 @@ def parse_message(entry: dict) -> tuple[str, str]:
     msg_type = msg.get("type", "unknown")
 
     if msg_type == "text":
-        return "text", msg.get("text", {}).get("body", "").strip().lower()
+        return "text", msg.get("text", {}).get("body", "").strip()
 
     if msg_type == "interactive":
         interactive = msg.get("interactive", {})
@@ -79,95 +109,186 @@ def parse_message(entry: dict) -> tuple[str, str]:
     return msg_type, ""
 
 
-# ── Onboarding ────────────────────────────────────────────────────────────
+# ── Onboarding state machine ─────────────────────────────────────────────
 
 def handle_onboarding(phone: str, msg_type: str, content: str, sub: dict | None):
+    """
+    Drive new users through onboarding and handle name-update flow.
+
+    Steps:
+      None (new user)       → ask for company name
+      awaiting_name         → save name, show sector picker
+      awaiting_sector       → save sector, mark complete
+      awaiting_name_update  → save updated name, back to complete (skip sector)
+    """
     step = sub["onboarding_step"] if sub else None
 
+    # ── Brand new user ──
     if sub is None:
         add_subscriber(phone, onboarding_step="awaiting_name")
         send_text(
             phone,
-            "*Welcome to TenderAlert Pro!* \n\n"
+            "*Welcome to TenderAlert Pro!* 🇷🇼\n\n"
             "I send daily Rwanda government tender alerts straight to WhatsApp, "
             "with AI-powered eligibility summaries so you know exactly what each bid requires.\n\n"
             "To get started — what is your *company or organisation name*?"
         )
         return
 
+    # ── Awaiting company name (initial onboarding) ──
     if step == "awaiting_name":
         company = content.strip() if content else "Unknown"
         update_subscriber(phone, company_name=company, onboarding_step="awaiting_sector")
-        send_text(phone, f"Nice to meet you, *{company}*!\n\nNow choose the sector you want tender alerts for:")
+        send_text(phone, f"Nice to meet you, *{company}*! 👋\n\nNow choose the sector you want tender alerts for:")
         send_sector_list(phone)
         return
 
+    # ── Awaiting sector selection ──
     if step == "awaiting_sector":
-        sector = content if content in VALID_SECTORS else "all"
+        sector = content.lower() if content else ""
+        if sector not in VALID_SECTORS:
+            # Don't silently default — ask again
+            send_text(phone, "I didn't recognise that sector. Please tap one of the options below:")
+            send_sector_list(phone)
+            return
+
         label = SECTOR_LABELS.get(sector, "All Sectors")
         update_subscriber(phone, sectors=sector, onboarding_step="complete")
         send_text(
             phone,
-            f"*You're all set!*\n\n"
+            f"✅ *You're all set!*\n\n"
             f"Sector: *{label}*\n\n"
-            f"You'll receive a daily morning alert every time new Rwanda government tenders "
-            f"are published in your sector.\n\n"
+            f"You'll receive a daily morning alert (08:00 Kigali time) every time new "
+            f"Rwanda government tenders are published in your sector.\n\n"
             f"Reply *HELP* anytime to see available commands."
         )
         return
 
+    # ── Awaiting name update (existing user changing their name) ──
+    if step == "awaiting_name_update":
+        company = content.strip() if content else "Unknown"
+        update_subscriber(phone, company_name=company, onboarding_step="complete")
+        send_text(phone, f"✅ Updated! Your company name is now *{company}*.")
+        return
 
-# ── Button replies ────────────────────────────────────────────────────────
 
-def handle_button_reply(phone: str, button_title: str):
+# ── Button reply handlers ─────────────────────────────────────────────────
+
+def handle_button_reply(phone: str, button_title: str, sub: dict):
+    """Route a Quick Reply button tap to the right action."""
     print(f"[webhook] Button tap from {phone}: {button_title!r}")
 
-    if button_title in (BTN_GET_DIGEST, BTN_GET_DIGEST_ALT, "get started"):
-        init_db()
-        tenders = get_new_tenders(since_hours=25)
+    # View tenders / Get digest / Get started
+    if button_title in (BTN_VIEW_TENDERS, BTN_GET_DIGEST_ALT, BTN_GET_STARTED):
+        tenders = get_tenders_for_subscriber(phone, since_hours=48)
         if tenders:
             send_tender_digest(phone, tenders, use_template=False)
         else:
-            send_text(phone, "No new tenders in the last 24 hours. Check back tomorrow morning!")
+            send_text(phone, "No new tenders in your sector in the last 48 hours. Check back tomorrow morning! ☀️")
 
-    elif button_title in (BTN_CHANGE_SECTORS, BTN_CHANGE_SECTORS_ALT):
+    # Change sector
+    elif button_title in (BTN_CHANGE_SECTOR, BTN_CHANGE_SECTORS_ALT):
         update_subscriber(phone, onboarding_step="awaiting_sector")
         send_text(phone, "No problem! Select a new sector below:")
         send_sector_list(phone)
 
-    elif button_title in (BTN_UNSUBSCRIBE, BTN_UNSUBSCRIBE_ALT):
+    # Stop alerts / Unsubscribe — ask for confirmation
+    elif button_title in (BTN_STOP_ALERTS, BTN_UNSUBSCRIBE_ALT):
+        send_buttons(
+            phone,
+            "Are you sure you want to stop receiving tender alerts?",
+            ["Yes, unsubscribe", "No, keep alerts"]
+        )
+
+    # Unsubscribe confirmation: YES
+    elif button_title == BTN_CONFIRM_UNSUB:
         remove_subscriber(phone)
-        send_text(phone, "You've been unsubscribed from TenderAlert Pro.\n\nMessage us anytime to rejoin.")
+        send_text(
+            phone,
+            "You've been unsubscribed from TenderAlert Pro.\n\n"
+            "Message us anytime to rejoin — we'll be here! 👋"
+        )
+
+    # Unsubscribe confirmation: NO (keep alerts)
+    elif button_title == BTN_KEEP_ALERTS:
+        send_text(phone, "Great, your alerts are still active! ✅\n\nReply *HELP* to see available commands.")
 
     else:
+        send_text(phone, QUICK_HELP)
+
+
+# ── Text command handlers ─────────────────────────────────────────────────
+
+def handle_text(phone: str, text: str, sub: dict):
+    """Route a free-form text command from an onboarded user."""
+    text_lower = text.lower().strip()
+    print(f"[webhook] Text from {phone}: {text_lower!r}")
+
+    # ── HELP ──
+    if text_lower == "help":
         send_text(phone, HELP_TEXT)
 
+    # ── STATUS / ME / PROFILE ──
+    elif text_lower in ("status", "me", "profile", "my profile", "my status"):
+        send_text(phone, format_status_message(sub))
 
-# ── Text commands ─────────────────────────────────────────────────────────
-
-def handle_text(phone: str, text: str):
-    print(f"[webhook] Text from {phone}: {text!r}")
-
-    if text in ("stop", "unsubscribe", "quit"):
-        remove_subscriber(phone)
-        send_text(phone, "You've been unsubscribed. Message us anytime to rejoin.")
-
-    elif text in ("sectors", "sector", "change sector"):
+    # ── SECTORS / CHANGE SECTOR ──
+    elif text_lower in ("sectors", "sector", "change sector", "change sectors"):
         update_subscriber(phone, onboarding_step="awaiting_sector")
         send_text(phone, "Select a new sector below:")
         send_sector_list(phone)
 
-    elif text == "help":
-        send_text(phone, HELP_TEXT)
+    # ── NAME / CHANGE NAME ──
+    elif text_lower in ("name", "change name", "update name", "company name"):
+        update_subscriber(phone, onboarding_step="awaiting_name_update")
+        send_text(phone, "What's the new company or organisation name?")
 
+    # ── LIST / TENDERS / LATEST ──
+    elif text_lower in ("list", "tenders", "latest", "new", "today"):
+        tenders = get_tenders_for_subscriber(phone, since_hours=48)
+        if tenders:
+            message = format_tender_alert(tenders, subscriber_name=sub.get("company_name"))
+            send_text(phone, message)
+        else:
+            send_text(phone, "No new tenders in your sector in the last 48 hours.\n\nTry *SEARCH <keyword>* to find specific tenders.")
+
+    # ── SEARCH <keyword> ──
+    elif text_lower.startswith("search "):
+        keyword = text[7:].strip()  # preserve original case for display
+        if len(keyword) < 2:
+            send_text(phone, "Please provide a keyword to search.\n\nExample: *search construction*")
+        else:
+            results = search_tenders(keyword, limit=5)
+            send_text(phone, format_search_results(results, keyword))
+
+    # ── STOP / UNSUBSCRIBE ── (with confirmation)
+    elif text_lower in ("stop", "unsubscribe", "quit", "cancel"):
+        send_buttons(
+            phone,
+            "Are you sure you want to stop receiving tender alerts?",
+            ["Yes, unsubscribe", "No, keep alerts"]
+        )
+
+    # ── GREETINGS (returning user) ──
+    elif text_lower in ("hi", "hello", "hey", "start", "join", "subscribe"):
+        company = sub.get("company_name") or "there"
+        sector = SECTOR_LABELS.get(sub.get("sectors", "all"), "All Sectors")
+        send_text(
+            phone,
+            f"Welcome back, *{company}*! 👋\n\n"
+            f"Your sector: *{sector}*\n\n"
+            f"Reply *LIST* to see today's tenders, or *HELP* for all commands."
+        )
+
+    # ── UNKNOWN COMMAND ──
     else:
-        send_text(phone, "I didn't understand that.\n\nReply *HELP* to see available commands.")
+        send_text(phone, QUICK_HELP)
 
 
 # ── Main dispatcher ───────────────────────────────────────────────────────
 
 def process_webhook_entry(entry: dict):
-    """Process a single webhook entry (one message). Called by the FastAPI route."""
+    """Process a single webhook entry. Called by the FastAPI route."""
     phone = parse_phone(entry)
     if not phone:
         return
@@ -179,20 +300,22 @@ def process_webhook_entry(entry: dict):
     sub = get_subscriber(phone)
     step = sub["onboarding_step"] if sub else None
 
-    # Onboarding gate
-    if sub is None or step in ("awaiting_name", "awaiting_sector"):
+    # ── Onboarding gate ──
+    # New user OR mid-onboarding OR name update: drive the wizard
+    if sub is None or step in ("awaiting_name", "awaiting_sector", "awaiting_name_update"):
         handle_onboarding(phone, msg_type, content, sub)
         return
 
-    # Onboarded users
+    # ── Onboarded users: full command set ──
     if msg_type == "button_reply":
-        handle_button_reply(phone, content)
+        handle_button_reply(phone, content, sub)
 
     elif msg_type == "list_reply":
+        # Sector list selection (from "Change Sector" or onboarding)
         sector = content if content in VALID_SECTORS else "all"
         label = SECTOR_LABELS.get(sector, "All Sectors")
         update_subscriber(phone, sectors=sector, onboarding_step="complete")
-        send_text(phone, f"Updated! You'll now receive alerts for *{label}*.")
+        send_text(phone, f"✅ Updated! You'll now receive alerts for *{label}*.")
 
     elif msg_type == "text" and content:
-        handle_text(phone, content)
+        handle_text(phone, content, sub)

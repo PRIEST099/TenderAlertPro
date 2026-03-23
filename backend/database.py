@@ -147,6 +147,38 @@ def get_active_subscribers() -> list:
     return rows
 
 
+def search_tenders(keyword: str, limit: int = 3) -> list:
+    """Search active tenders by keyword in title or buyer name."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT * FROM tenders
+        WHERE (title LIKE ? OR buyer_name LIKE ? OR description LIKE ?)
+          AND status = 'active'
+          AND deadline > datetime('now')
+        ORDER BY deadline ASC
+        LIMIT ?
+    """, (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", limit))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_tenders_for_subscriber(phone: str, since_hours: int = 48) -> list:
+    """Get recent tenders filtered by the subscriber's sector preference."""
+    sub = get_subscriber(phone)
+    if not sub:
+        return []
+
+    tenders = get_new_tenders(since_hours=since_hours)
+    sectors = sub.get("sectors", "all")
+
+    if sectors == "all":
+        return tenders
+
+    return [t for t in tenders if sectors.lower() in (t.get("category") or "").lower()]
+
+
 def save_ai_summary(ocid: str, summary: str):
     conn = get_conn()
     c = conn.cursor()

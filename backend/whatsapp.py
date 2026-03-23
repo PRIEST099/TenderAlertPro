@@ -167,12 +167,9 @@ def format_tender_alert(tenders: list[dict], subscriber_name: str = None) -> str
         lines.append(block)
 
     if len(tenders) > 5:
-        lines.append(
-            f"\n_...and {len(tenders) - 5} more tender(s)._\n"
-            f"_Reply *LIST* to see all, or *SET <sector>* to filter._"
-        )
+        lines.append(f"\n_...and {len(tenders) - 5} more. Reply *LIST* to see more._")
 
-    lines.append("\n_Reply STOP to unsubscribe | HELP for commands_")
+    lines.append("\n_Reply *HELP* for commands | *STOP* to unsubscribe_")
     return "\n\n".join(lines)
 
 
@@ -319,3 +316,48 @@ def send_welcome(phone: str) -> bool:
         "_Powered by Rwanda RPPA Umucyo data_"
     )
     return send_text(phone, message)
+
+
+def format_status_message(sub: dict) -> str:
+    """Format a subscriber's profile info for the STATUS command."""
+    sector_labels = {
+        "ict": "ICT & Technology", "construction": "Works & Construction",
+        "health": "Health & Pharma", "education": "Education",
+        "consulting": "Consulting & Services", "supply": "Supply & Goods",
+        "all": "All Sectors",
+    }
+    sector = sector_labels.get(sub.get("sectors", "all"), sub.get("sectors", "all"))
+    company = sub.get("company_name") or "Not set"
+    joined = (sub.get("created_at") or "")[:10] or "Unknown"
+    status = "Active" if sub.get("active") else "Inactive"
+
+    return (
+        f"*Your TenderAlert Pro Subscription*\n\n"
+        f"🏢 Company: *{company}*\n"
+        f"📂 Sector: *{sector}*\n"
+        f"📅 Joined: {joined}\n"
+        f"{'✅' if sub.get('active') else '❌'} Status: {status}\n\n"
+        f"Reply *SECTORS* to change sector\n"
+        f"Reply *NAME* to update company name"
+    )
+
+
+def format_search_results(tenders: list[dict], keyword: str) -> str:
+    """Format tender search results for the SEARCH command."""
+    if not tenders:
+        return f"No active tenders matching '*{keyword}*'.\n\nTry a different keyword, e.g. *search construction*"
+
+    lines = [f"🔍 *{len(tenders)} tender(s) matching '{keyword}':*\n"]
+
+    for i, t in enumerate(tenders[:5], 1):
+        value_str = f"RWF {t['value_amount']:,.0f}" if t.get("value_amount") else "Value TBD"
+        deadline = (t.get("deadline") or "")[:10] or "TBD"
+        lines.append(
+            f"*{i}. {t['title']}*\n"
+            f"   🏢 {t['buyer_name']}\n"
+            f"   💰 {value_str}  |  ⏰ {deadline}\n"
+            f"   🔗 {t['source_url']}"
+        )
+
+    lines.append("\n_Reply *LIST* for all recent tenders | *HELP* for commands_")
+    return "\n\n".join(lines)
