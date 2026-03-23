@@ -1,7 +1,7 @@
 """
 bot.py — Flask webhook handler for incoming WhatsApp messages.
 
-Message flow:
+The actual Message flow:
   1. New number messages → onboarding wizard (name → sector → complete)
   2. Onboarded users → button replies + text commands
 
