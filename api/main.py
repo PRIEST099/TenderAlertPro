@@ -88,11 +88,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+# CORS — allow all origins if "*" is in the list, otherwise use specific origins
+cors_origins = ["*"] if "*" in CORS_ORIGINS else CORS_ORIGINS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=True if cors_origins != ["*"] else False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -32,4 +32,4 @@ FLASK_PORT = int(os.getenv("PORT", 5000))
 # Admin Dashboard Auth
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-jwt-secret-change-me")
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
