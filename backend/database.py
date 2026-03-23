@@ -44,16 +44,39 @@ def init_db():
         )
     """)
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS interaction_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            direction TEXT NOT NULL DEFAULT 'inbound',
+            msg_type TEXT NOT NULL DEFAULT 'text',
+            content TEXT DEFAULT '',
+            command TEXT DEFAULT '',
+            timestamp TEXT NOT NULL
+        )
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_logs_phone ON interaction_logs(phone)
+    """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON interaction_logs(timestamp)
+    """)
+
     # Migrate existing DBs that predate these columns
     for col, definition in [
         ("company_name",    "TEXT DEFAULT ''"),
         ("onboarding_step", "TEXT DEFAULT 'awaiting_name'"),
-        ("tags",            "TEXT DEFAULT ''"),  # tenders: AI-assigned sector tags (comma-separated)
+        ("tags",            "TEXT DEFAULT ''"),
     ]:
         try:
             c.execute(f"ALTER TABLE subscribers ADD COLUMN {col} {definition}")
         except Exception:
-            pass  # Column already exists — safe to ignore
+            pass
+    try:
+        c.execute("ALTER TABLE tenders ADD COLUMN tags TEXT DEFAULT ''")
+    except Exception:
+        pass
 
     conn.commit()
     conn.close()
@@ -78,16 +101,31 @@ def upsert_tender(tender: dict):
     return inserted
 
 
-def get_new_tenders(since_hours: int = 25) -> list:
+def get_new_tenders(since_hours: int = 0, limit: int = 20) -> list:
+    """
+    Get active tenders with future deadlines.
+    since_hours=0 means all active tenders (no fetched_at filter).
+    since_hours>0 means only tenders fetched within the last N hours.
+    """
     conn = get_conn()
     c = conn.cursor()
-    c.execute("""
-        SELECT * FROM tenders
-        WHERE status = 'active'
-          AND deadline > datetime('now')
-          AND fetched_at > datetime('now', ? || ' hours')
-        ORDER BY deadline ASC
-    """, (f"-{since_hours}",))
+    if since_hours > 0:
+        c.execute("""
+            SELECT * FROM tenders
+            WHERE status = 'active'
+              AND deadline > datetime('now')
+              AND fetched_at > datetime('now', ? || ' hours')
+            ORDER BY deadline ASC
+            LIMIT ?
+        """, (f"-{since_hours}", limit))
+    else:
+        c.execute("""
+            SELECT * FROM tenders
+            WHERE status = 'active'
+              AND deadline > datetime('now')
+            ORDER BY deadline ASC
+            LIMIT ?
+        """, (limit,))
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
     return rows
@@ -165,13 +203,13 @@ def search_tenders(keyword: str, limit: int = 3) -> list:
     return rows
 
 
-def get_tenders_for_subscriber(phone: str, since_hours: int = 48) -> list:
-    """Get recent tenders filtered by the subscriber's sector preference."""
+def get_tenders_for_subscriber(phone: str, since_hours: int = 0, limit: int = 10) -> list:
+    """Get active tenders filtered by the subscriber's sector preference."""
     sub = get_subscriber(phone)
     if not sub:
         return []
 
-    tenders = get_new_tenders(since_hours=since_hours)
+    tenders = get_new_tenders(since_hours=since_hours, limit=limit)
     sectors = sub.get("sectors", "all")
 
     if sectors == "all":
@@ -183,6 +221,93 @@ def get_tenders_for_subscriber(phone: str, since_hours: int = 48) -> list:
         if sector in (t.get("category") or "").lower()
         or sector in (t.get("tags") or "").lower()
     ]
+
+
+# ── Interaction Logging ────────────────────────────────────────────────────
+
+def log_interaction(phone: str, direction: str, msg_type: str, content: str, command: str = ""):
+    """
+    Log every inbound/outbound interaction.
+    direction: 'inbound' (user→bot) or 'outbound' (bot→user)
+    msg_type: 'text', 'button_reply', 'list_reply', 'template', 'buttons', etc.
+    command: the resolved command name (e.g. 'help', 'list', 'search', 'onboarding')
+    """
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO interaction_logs (phone, direction, msg_type, content, command, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (phone, direction, msg_type, content[:500], command, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_interaction_logs(phone: str = None, limit: int = 50, offset: int = 0) -> list:
+    """Get interaction logs, optionally filtered by phone."""
+    conn = get_conn()
+    c = conn.cursor()
+    if phone:
+        c.execute("""
+            SELECT * FROM interaction_logs WHERE phone = ?
+            ORDER BY timestamp DESC LIMIT ? OFFSET ?
+        """, (phone, limit, offset))
+    else:
+        c.execute("""
+            SELECT * FROM interaction_logs
+            ORDER BY timestamp DESC LIMIT ? OFFSET ?
+        """, (limit, offset))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_interaction_stats(period: str = "today") -> list[dict]:
+    """
+    Get per-user interaction counts for fraud detection.
+    period: 'today', 'week', 'month'
+    Returns list of {phone, company_name, inbound_count, outbound_count, total, first_seen, last_seen}
+    """
+    period_filter = {
+        "today": "datetime('now', '-1 day')",
+        "week": "datetime('now', '-7 days')",
+        "month": "datetime('now', '-30 days')",
+    }.get(period, "datetime('now', '-1 day')")
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(f"""
+        SELECT
+            l.phone,
+            COALESCE(s.company_name, 'Unknown') as company_name,
+            SUM(CASE WHEN l.direction = 'inbound' THEN 1 ELSE 0 END) as inbound_count,
+            SUM(CASE WHEN l.direction = 'outbound' THEN 1 ELSE 0 END) as outbound_count,
+            COUNT(*) as total,
+            MIN(l.timestamp) as first_seen,
+            MAX(l.timestamp) as last_seen,
+            COALESCE(s.active, 0) as active
+        FROM interaction_logs l
+        LEFT JOIN subscribers s ON l.phone = s.phone
+        WHERE l.timestamp > {period_filter}
+        GROUP BY l.phone
+        ORDER BY total DESC
+    """)
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_interaction_count(phone: str, hours: int = 24) -> int:
+    """Count interactions from a phone in the last N hours (for rate limiting)."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT COUNT(*) FROM interaction_logs
+        WHERE phone = ? AND direction = 'inbound'
+          AND timestamp > datetime('now', ? || ' hours')
+    """, (phone, f"-{hours}"))
+    count = c.fetchone()[0]
+    conn.close()
+    return count
 
 
 def save_ai_summary(ocid: str, summary: str, tags: str = ""):

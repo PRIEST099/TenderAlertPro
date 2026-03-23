@@ -31,6 +31,7 @@ from api.routers.subscribers import router as subscribers_router
 from api.routers.tenders import router as tenders_router
 from api.routers.operations import router as operations_router
 from api.routers.settings import router as settings_router
+from api.routers.logs import router as logs_router
 
 
 # ── Scheduler ─────────────────────────────────────────────────────────────
@@ -105,6 +106,7 @@ app.include_router(subscribers_router)
 app.include_router(tenders_router)
 app.include_router(operations_router)
 app.include_router(settings_router)
+app.include_router(logs_router)
 
 
 # ── Auth endpoint ─────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ from database import (  # noqa: E402
     add_subscriber, remove_subscriber, get_subscriber,
     update_subscriber, get_new_tenders, search_tenders,
     get_tenders_for_subscriber, init_db,
+    log_interaction, get_interaction_count,
 )
 from whatsapp import (  # noqa: E402
     send_text, send_sector_list, send_buttons, send_tender_digest,
@@ -212,7 +213,7 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
 
     # View tenders / Get digest / Get started
     if button_title in (BTN_VIEW_TENDERS, BTN_GET_DIGEST_ALT, BTN_GET_STARTED):
-        tenders = get_tenders_for_subscriber(phone, since_hours=48)
+        tenders = get_tenders_for_subscriber(phone)
         if tenders:
             message = format_tender_alert(tenders, subscriber_name=sub.get("company_name"))
             send_text(phone, message)
@@ -294,7 +295,7 @@ def handle_text(phone: str, text: str, sub: dict):
 
     # ── LIST / TENDERS / LATEST ──
     elif text_lower in ("list", "tenders", "latest", "new", "today"):
-        tenders = get_tenders_for_subscriber(phone, since_hours=48)
+        tenders = get_tenders_for_subscriber(phone)
         if tenders:
             message = format_tender_alert(tenders, subscriber_name=sub.get("company_name"))
             send_text(phone, message)
@@ -343,6 +344,38 @@ def handle_text(phone: str, text: str, sub: dict):
         send_buttons(phone, "Choose an action:", MAIN_BUTTONS)
 
 
+# ── Rate limiting ──────────────────────────────────────────────────────────
+
+RATE_LIMIT_PER_HOUR = 30  # Max inbound messages per user per hour
+
+
+def is_rate_limited(phone: str) -> bool:
+    """Check if a user has exceeded the rate limit."""
+    count = get_interaction_count(phone, hours=1)
+    return count >= RATE_LIMIT_PER_HOUR
+
+
+# ── Resolve command name for logging ──────────────────────────────────────
+
+def resolve_command(msg_type: str, content: str) -> str:
+    """Map a message to a command name for logging."""
+    if msg_type == "button_reply":
+        return f"button:{content}"
+    if msg_type == "list_reply":
+        return f"sector_select:{content}"
+
+    text = content.lower().strip()
+    if text in ("help",): return "help"
+    if text in ("status", "me", "profile", "my profile", "my status"): return "status"
+    if text in ("sectors", "sector", "change sector", "change sectors"): return "sectors"
+    if text in ("name", "change name", "update name", "company name"): return "name"
+    if text in ("list", "tenders", "latest", "new", "today"): return "list"
+    if text.startswith("search "): return "search"
+    if text in ("stop", "unsubscribe", "quit", "cancel"): return "stop"
+    if text in ("hi", "hello", "hey", "start", "join", "subscribe"): return "greeting"
+    return "unknown"
+
+
 # ── Main dispatcher ───────────────────────────────────────────────────────
 
 def process_webhook_entry(entry: dict):
@@ -353,6 +386,16 @@ def process_webhook_entry(entry: dict):
 
     msg_type, content = parse_message(entry)
     if msg_type == "unknown":
+        return
+
+    # Log every inbound interaction
+    command = resolve_command(msg_type, content)
+    log_interaction(phone, "inbound", msg_type, content, command=command)
+
+    # Rate limiting
+    if is_rate_limited(phone):
+        send_text(phone, "⚠️ You're sending messages too quickly. Please wait a few minutes before trying again.")
+        log_interaction(phone, "outbound", "text", "rate_limited", command="rate_limit")
         return
 
     sub = get_subscriber(phone)

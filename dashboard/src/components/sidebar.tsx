@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, FileText, Settings, Zap, LogOut } from "lucide-react";
+import { LayoutDashboard, Users, FileText, Settings, Zap, LogOut, ScrollText } from "lucide-react";
 import { logout } from "@/lib/api";
 
 const links = [
@@ -10,6 +10,7 @@ const links = [
   { href: "/subscribers", label: "Subscribers", icon: Users },
   { href: "/tenders", label: "Tenders", icon: FileText },
   { href: "/operations", label: "Operations", icon: Zap },
+  { href: "/logs", label: "Logs & Security", icon: ScrollText },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
