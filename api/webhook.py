@@ -23,6 +23,7 @@ from database import (  # noqa: E402
 )
 from whatsapp import (  # noqa: E402
     send_text, send_sector_list, send_buttons, send_tender_digest,
+    send_tender_list, format_tender_detail,
     format_tender_alert, format_status_message, format_search_results,
 )
 
@@ -59,6 +60,10 @@ HELP_TEXT = (
 )
 
 # Standard button sets for common responses
+# In-memory cache: phone → list of tenders (for tender selection by index)
+# Cleared when user selects a tender or after timeout (simple dict, not persistent)
+_user_tender_cache: dict[str, list[dict]] = {}
+
 MAIN_BUTTONS = ["View Tenders", "My Status", "Help"]
 AFTER_ACTION_BUTTONS = ["View Tenders", "Change Sector", "Help"]
 AFTER_TENDERS_BUTTONS = ["Change Sector", "My Status", "Help"]
@@ -211,15 +216,15 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
     """Route a Quick Reply button tap to the right action."""
     print(f"[webhook] Button tap from {phone}: {button_title!r}")
 
-    # View tenders / Get digest / Get started
+    # View tenders / Get digest / Get started → send interactive tender list
     if button_title in (BTN_VIEW_TENDERS, BTN_GET_DIGEST_ALT, BTN_GET_STARTED):
         tenders = get_tenders_for_subscriber(phone)
         if tenders:
-            message = format_tender_alert(tenders, subscriber_name=sub.get("company_name"))
-            send_text(phone, message)
-            send_buttons(phone, "What's next?", AFTER_TENDERS_BUTTONS)
+            # Store tenders in memory for this user so we can look them up by index
+            _user_tender_cache[phone] = tenders[:10]
+            send_tender_list(phone, tenders)
         else:
-            send_text(phone, "No new tenders in your sector in the last 48 hours. Check back tomorrow morning! ☀️")
+            send_text(phone, "No active tenders in your sector right now. Check back tomorrow morning! ☀️")
             send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
 
     # Change sector
@@ -265,6 +270,65 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
         send_buttons(phone, "Choose an action:", MAIN_BUTTONS)
 
 
+# ── Tender selection handler ───────────────────────────────────────────────
+
+def handle_tender_selection(phone: str, content: str, sub: dict):
+    """
+    User tapped a specific tender from the interactive list.
+    Enrich it with Claude on-the-fly if needed, then send the full detail.
+    """
+    print(f"[webhook] Tender selection from {phone}: {content!r}")
+
+    # Extract index from "tender:0", "tender:1", etc.
+    try:
+        idx = int(content.split(":")[1])
+    except (IndexError, ValueError):
+        send_text(phone, "Something went wrong. Try again:")
+        send_buttons(phone, "Choose an action:", MAIN_BUTTONS)
+        return
+
+    # Look up the tender from cache
+    cached = _user_tender_cache.get(phone, [])
+    if idx < 0 or idx >= len(cached):
+        # Cache expired or invalid — re-fetch
+        tenders = get_tenders_for_subscriber(phone)
+        if idx < len(tenders):
+            cached = tenders[:10]
+            _user_tender_cache[phone] = cached
+        else:
+            send_text(phone, "That tender is no longer available. Here are the latest:")
+            tenders = get_tenders_for_subscriber(phone)
+            if tenders:
+                _user_tender_cache[phone] = tenders[:10]
+                send_tender_list(phone, tenders)
+            else:
+                send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
+            return
+
+    tender = cached[idx]
+
+    # Enrich on-the-fly if no AI summary exists
+    if not tender.get("ai_summary"):
+        send_text(phone, "🤖 _Analyzing this tender with AI... one moment..._")
+        try:
+            from ai_enrichment import enrich_tender  # noqa: E402
+            from database import save_ai_summary  # noqa: E402
+            summary, tags = enrich_tender(tender)
+            if summary:
+                save_ai_summary(tender["ocid"], summary, tags=tags)
+                tender["ai_summary"] = summary
+        except Exception as e:
+            print(f"[webhook] On-the-fly enrichment failed: {e}")
+
+    # Send the full tender detail
+    detail = format_tender_detail(tender)
+    send_text(phone, detail)
+    send_buttons(phone, "What's next?", ["View Tenders", "Change Sector", "Help"])
+
+    # Clear cache for this user
+    _user_tender_cache.pop(phone, None)
+
+
 # ── Text command handlers ─────────────────────────────────────────────────
 
 def handle_text(phone: str, text: str, sub: dict):
@@ -293,15 +357,14 @@ def handle_text(phone: str, text: str, sub: dict):
         update_subscriber(phone, onboarding_step="awaiting_name_update")
         send_text(phone, "What's the new company or organisation name?")
 
-    # ── LIST / TENDERS / LATEST ──
+    # ── LIST / TENDERS / LATEST ── send interactive list (tap to see AI detail)
     elif text_lower in ("list", "tenders", "latest", "new", "today"):
         tenders = get_tenders_for_subscriber(phone)
         if tenders:
-            message = format_tender_alert(tenders, subscriber_name=sub.get("company_name"))
-            send_text(phone, message)
-            send_buttons(phone, "What's next?", AFTER_TENDERS_BUTTONS)
+            _user_tender_cache[phone] = tenders[:10]
+            send_tender_list(phone, tenders)
         else:
-            send_text(phone, "No new tenders in your sector in the last 48 hours.\n\nTry *SEARCH <keyword>* to find specific tenders.")
+            send_text(phone, "No active tenders in your sector right now.\n\nTry *SEARCH <keyword>* to find specific tenders.")
             send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
 
     # ── SEARCH <keyword> ──
@@ -411,11 +474,15 @@ def process_webhook_entry(entry: dict):
         handle_button_reply(phone, content, sub)
 
     elif msg_type == "list_reply":
-        sector = content if content in VALID_SECTORS else "all"
-        label = SECTOR_LABELS.get(sector, "All Sectors")
-        update_subscriber(phone, sectors=sector, onboarding_step="complete")
-        send_text(phone, f"✅ Updated! You'll now receive alerts for *{label}*.")
-        send_buttons(phone, "What's next?", AFTER_ACTION_BUTTONS)
+        # Distinguish tender selection (id starts with "tender:") from sector selection
+        if content.startswith("tender:"):
+            handle_tender_selection(phone, content, sub)
+        else:
+            sector = content if content in VALID_SECTORS else "all"
+            label = SECTOR_LABELS.get(sector, "All Sectors")
+            update_subscriber(phone, sectors=sector, onboarding_step="complete")
+            send_text(phone, f"✅ Updated! You'll now receive alerts for *{label}*.")
+            send_buttons(phone, "What's next?", AFTER_ACTION_BUTTONS)
 
     elif msg_type == "text" and content:
         handle_text(phone, content, sub)

@@ -305,6 +305,98 @@ def send_buttons(phone: str, body: str, buttons: list[str]) -> bool:
         return False
 
 
+def send_tender_list(phone: str, tenders: list[dict]) -> bool:
+    """
+    Send an interactive LIST of tenders — user taps one to see AI-enriched details.
+    Each row ID is 'tender:{index}' to distinguish from sector list replies.
+    Max 10 tenders per list.
+    """
+    if not tenders:
+        return send_text(phone, "No active tenders found in your sector right now.")
+
+    rows = []
+    for i, t in enumerate(tenders[:10]):
+        title = t.get("title", "Untitled")[:24]  # WhatsApp max row title
+        value_str = f"RWF {t['value_amount']:,.0f}" if t.get("value_amount") else "Value TBD"
+        deadline = (t.get("deadline") or "")[:10] or "No deadline"
+        desc = f"{t.get('buyer_name', '')[:30]} | {deadline}"[:72]  # Max 72 chars description
+
+        rows.append({
+            "id": f"tender:{i}",
+            "title": title,
+            "description": desc,
+        })
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": phone,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {
+                "text": f"📋 *{len(tenders)} active tender(s)* in your sector.\n\nTap any tender to see the full AI-powered eligibility analysis:"
+            },
+            "action": {
+                "button": "View Tenders",
+                "sections": [{
+                    "title": "Active Tenders",
+                    "rows": rows,
+                }],
+            },
+        },
+    }
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(WHATSAPP_API_URL, json=payload, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            print(f"[whatsapp] Tender list ({len(rows)} items) sent to {phone}")
+            return True
+        print(f"[whatsapp] Tender list failed: {resp.json().get('error', {}).get('message')}")
+        return False
+    except requests.RequestException as e:
+        print(f"[whatsapp] send_tender_list failed: {e}")
+        return False
+
+
+def format_tender_detail(tender: dict) -> str:
+    """
+    Format a single tender with full AI enrichment for WhatsApp.
+    This is what users see when they tap a specific tender.
+    """
+    title = tender.get("title", "Untitled")
+    buyer = tender.get("buyer_name", "Unknown")
+    category = tender.get("category", "Other")
+    value_str = f"RWF {tender['value_amount']:,.0f}" if tender.get("value_amount") else "Value not disclosed"
+    deadline = (tender.get("deadline") or "")[:10] or "Not specified"
+    ocid = tender.get("ocid", "")
+
+    lines = [
+        f"📋 *{title}*\n",
+        f"🏢 *Buyer:* {buyer}",
+        f"📂 *Category:* {category}",
+        f"💰 *Value:* {value_str}",
+        f"⏰ *Deadline:* {deadline}",
+    ]
+
+    # AI enrichment (the main value)
+    ai_summary = tender.get("ai_summary")
+    if ai_summary:
+        lines.append(f"\n🤖 *AI Eligibility Analysis:*\n\n{ai_summary}")
+    else:
+        lines.append("\n⏳ _AI analysis not yet available for this tender._")
+
+    # Reference number for searching on Umucyo
+    if ocid:
+        ref = ocid.replace("ocds-ozzobm-", "")
+        lines.append(f"\n📎 *Reference:* {ref}")
+        lines.append(f"🔗 Search this tender on the official portal:\nhttps://umucyo.gov.rw")
+
+    return "\n".join(lines)
+
+
 def send_welcome(phone: str) -> bool:
     message = (
         "*Welcome to TenderAlert Pro!* \n\n"
