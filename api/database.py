@@ -198,7 +198,8 @@ def get_tenders_paginated(
             FROM tenders WHERE {where_sql}
             ORDER BY
                 CASE WHEN status = 'active' AND deadline > datetime('now') THEN 0 ELSE 1 END,
-                deadline ASC
+                CASE WHEN deadline > datetime('now') THEN deadline END ASC,
+                CASE WHEN deadline <= datetime('now') OR deadline IS NULL THEN deadline END DESC
             LIMIT ? OFFSET ?""",
         params + [per_page, offset],
     )
