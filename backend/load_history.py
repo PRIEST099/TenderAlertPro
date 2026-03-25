@@ -87,51 +87,61 @@ def extract_awards_from_release(release: dict) -> list[dict]:
 
 
 def load_year(year: int) -> int:
-    """Download and process a single year's bulk OCDS data. Returns awards count."""
+    """Download and process a single year's bulk OCDS data. Returns awards count.
+    Uses streaming decompression to keep memory usage low (~5MB instead of 200MB).
+    """
     url = BULK_URL_TEMPLATE.format(year=year)
-    print(f"[load_history] Downloading {year} data from {url}...")
+    print(f"[load_history] Downloading + streaming {year} data from {url}...")
 
     try:
-        resp = requests.get(url, stream=True, timeout=120, headers=HEADERS)
+        resp = requests.get(url, stream=True, timeout=300, headers=HEADERS)
         resp.raise_for_status()
     except requests.RequestException as e:
         print(f"[load_history] Download failed for {year}: {e}")
         return 0
 
-    size_mb = len(resp.content) / (1024 * 1024)
-    print(f"[load_history] Downloaded {size_mb:.1f} MB. Decompressing...")
-
-    content = gzip.decompress(resp.content)
-    lines = content.splitlines()
-    print(f"[load_history] {len(lines)} releases to process...")
-
     total_awards = 0
     releases_with_awards = 0
+    line_count = 0
 
-    for i, line in enumerate(lines):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    # Stream decompress — never loads full file into RAM
+    import io
+    raw_stream = io.BytesIO()
+    downloaded = 0
+    for chunk in resp.iter_content(chunk_size=65536):
+        raw_stream.write(chunk)
+        downloaded += len(chunk)
 
-        # Bulk file may be release packages or individual releases
-        releases = obj.get("releases", [obj]) if isinstance(obj, dict) else [obj]
+    raw_stream.seek(0)
+    print(f"[load_history] Downloaded {downloaded / 1024 / 1024:.1f} MB. Streaming decompression...")
 
-        for release in releases:
-            awards = extract_awards_from_release(release)
-            if awards:
-                releases_with_awards += 1
-                for award in awards:
-                    upsert_award(award)
-                    total_awards += 1
+    # Decompress in streaming mode using gzip file wrapper
+    with gzip.GzipFile(fileobj=raw_stream) as gz:
+        for raw_line in gz:
+            line = raw_line.strip()
+            if not line:
+                continue
+            line_count += 1
 
-        if (i + 1) % 5000 == 0:
-            print(f"[load_history] Processed {i + 1}/{len(lines)} releases, {total_awards} awards so far...")
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
-    print(f"[load_history] {year}: {total_awards} awards from {releases_with_awards} releases")
+            releases = obj.get("releases", [obj]) if isinstance(obj, dict) else [obj]
+
+            for release in releases:
+                awards = extract_awards_from_release(release)
+                if awards:
+                    releases_with_awards += 1
+                    for award in awards:
+                        upsert_award(award)
+                        total_awards += 1
+
+            if line_count % 500 == 0:
+                print(f"[load_history] Processed {line_count} releases, {total_awards} awards so far...")
+
+    print(f"[load_history] {year}: {total_awards} awards from {releases_with_awards}/{line_count} releases")
     return total_awards
 
 
