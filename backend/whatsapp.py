@@ -448,6 +448,177 @@ def format_status_message(sub: dict) -> str:
     )
 
 
+def format_deep_analysis(analysis: dict, tender: dict) -> list[str]:
+    """
+    Format a deep analysis result into 2-3 WhatsApp messages.
+    Each message stays under 4096 characters.
+    Returns a list of message strings.
+    """
+    messages = []
+
+    # ── Message 1: Summary + Qualification + Documents ───────────────
+    qual = analysis.get("qualification", {})
+    assessment = qual.get("assessment", "NEEDS_REVIEW")
+    assessment_emoji = {"LIKELY_ELIGIBLE": "✅", "UNLIKELY": "❌", "NEEDS_REVIEW": "⚠️"}.get(assessment, "⚠️")
+    assessment_label = assessment.replace("_", " ").title()
+
+    msg1_parts = [
+        f"📊 *DEEP ANALYSIS*",
+        f"*{tender.get('title', '')}*",
+        "",
+        f"📝 {analysis.get('summary', 'No summary available.')}",
+        "",
+        f"{assessment_emoji} *Qualification: {assessment_label}*",
+    ]
+    for reason in qual.get("reasons", [])[:5]:
+        msg1_parts.append(f"  • {reason}")
+
+    docs = analysis.get("required_documents", [])
+    if docs:
+        msg1_parts.append("")
+        msg1_parts.append("📋 *Required Documents:*")
+        for i, doc in enumerate(docs[:8], 1):
+            msg1_parts.append(f"  {i}. {doc}")
+
+    criteria = analysis.get("evaluation_criteria", [])
+    if criteria:
+        msg1_parts.append("")
+        msg1_parts.append("📊 *Evaluation Criteria:*")
+        for c in criteria[:5]:
+            msg1_parts.append(f"  • {c}")
+
+    messages.append("\n".join(msg1_parts))
+
+    # ── Message 2: Historical Intelligence + Risks ───────────────────
+    comp = analysis.get("competition_insight", {})
+    msg2_parts = ["🏆 *HISTORICAL INTELLIGENCE*", ""]
+
+    top_winners = comp.get("top_winners_from_buyer", [])
+    if top_winners:
+        msg2_parts.append(f"*Who wins contracts from {tender.get('buyer_name', 'this buyer')}?*")
+        for i, w in enumerate(top_winners[:5], 1):
+            avg = w.get("avg_amount")
+            avg_str = f"avg RWF {avg:,.0f}" if avg else "amount unknown"
+            msg2_parts.append(f"  {i}. {w.get('name', '?')} — {w.get('wins', 0)} win(s), {avg_str}")
+        msg2_parts.append("")
+
+    msg2_parts.append("📊 *Competition Level:*")
+    num_this = comp.get("num_bidders_this_tender")
+    hist_avg = comp.get("historical_avg_bidders")
+    if num_this:
+        msg2_parts.append(f"  • {num_this} companies bid on this tender")
+    if hist_avg:
+        msg2_parts.append(f"  • Historical average: {hist_avg:.1f} bidders")
+
+    win_range = comp.get("typical_winning_range", {})
+    if win_range.get("min") and win_range.get("max"):
+        msg2_parts.append(f"  • Typical winning range: RWF {win_range['min']:,.0f} – {win_range['max']:,.0f}")
+
+    tender_value = tender.get("value_amount")
+    if tender_value:
+        msg2_parts.append(f"  • This tender value: RWF {tender_value:,.0f}")
+
+    budget = analysis.get("budget_info")
+    if budget and budget != "Not disclosed":
+        msg2_parts.append(f"  • Budget: {budget}")
+
+    risks = analysis.get("risk_factors", [])
+    if risks:
+        msg2_parts.append("")
+        msg2_parts.append("⚠️ *Risk Factors:*")
+        for risk in risks[:5]:
+            msg2_parts.append(f"  • {risk}")
+
+    messages.append("\n".join(msg2_parts))
+
+    # ── Message 3: Recommendation ────────────────────────────────────
+    rec = analysis.get("recommendation", "RESEARCH_MORE")
+    rec_emoji = {"WORTH_BIDDING": "👍", "SKIP": "⏭️", "RESEARCH_MORE": "🔍"}.get(rec, "🔍")
+    rec_label = rec.replace("_", " ").title()
+
+    msg3_parts = [
+        f"{rec_emoji} *Recommendation: {rec_label}*",
+        analysis.get("recommendation_reason", ""),
+    ]
+
+    deadlines = analysis.get("key_deadlines", [])
+    if deadlines:
+        msg3_parts.append("")
+        msg3_parts.append("📅 *Key Deadlines:*")
+        for d in deadlines[:3]:
+            msg3_parts.append(f"  • {d.get('event', '')}: {d.get('date', '')}")
+
+    ocid = tender.get("ocid", "")
+    if ocid:
+        ref = ocid.replace("ocds-ozzobm-", "")
+        msg3_parts.append(f"\n📎 *Ref:* {ref}")
+        msg3_parts.append(f"🔗 Search on Umucyo: umucyo.gov.rw")
+
+    messages.append("\n".join(msg3_parts))
+
+    return messages
+
+
+def format_pipeline(items: list[dict]) -> str:
+    """Format the bid pipeline as a kanban-style text list."""
+    if not items:
+        return "Your bid pipeline is empty.\n\nUse *SAVE [tender_id]* after viewing a tender to start tracking it."
+
+    groups = {}
+    for item in items:
+        status = item.get("status", "watching")
+        groups.setdefault(status, []).append(item)
+
+    status_emoji = {"watching": "👀", "preparing": "📝", "submitted": "📤", "won": "🏆", "lost": "❌"}
+    status_order = ["watching", "preparing", "submitted", "won", "lost"]
+
+    lines = ["*📋 Your Bid Pipeline*\n"]
+    for status in status_order:
+        items_in_status = groups.get(status, [])
+        if not items_in_status:
+            continue
+        emoji = status_emoji.get(status, "•")
+        lines.append(f"{emoji} *{status.upper()}* ({len(items_in_status)})")
+        for item in items_in_status[:5]:
+            title = (item.get("title") or "Untitled")[:40]
+            deadline = (item.get("deadline") or "")[:10]
+            lines.append(f"  • {title}")
+            if deadline:
+                lines.append(f"    ⏰ Deadline: {deadline}")
+        lines.append("")
+
+    lines.append("_Reply UPDATE [id] [status] to change status_")
+    return "\n".join(lines)
+
+
+def format_documents_checklist(docs_on_file: list[dict]) -> str:
+    """Format a document checklist showing what's uploaded vs missing."""
+    DOCUMENT_TYPES = {
+        "rdb": "RDB Company Registration Certificate",
+        "rra": "RRA Tax Clearance Certificate",
+        "rssb": "RSSB Certificate",
+        "vat": "VAT Certificate",
+        "profile": "Company Profile / Brochure",
+        "contract": "Past Contract / Reference Letter",
+        "cv": "Key Personnel CV",
+        "iso": "ISO or Other Certification",
+    }
+
+    have = {d["doc_type"] for d in docs_on_file}
+
+    lines = ["📁 *Your Documents on File:*\n"]
+    for key, label in DOCUMENT_TYPES.items():
+        if key in have:
+            lines.append(f"  ✅ {label}")
+        else:
+            lines.append(f"  ❌ {label}")
+
+    lines.append(f"\n_{len(have)}/{len(DOCUMENT_TYPES)} documents uploaded_")
+    lines.append("\nSend a PDF with a caption (e.g. *rdb*, *rra*, *cv*) to upload.")
+    lines.append("Reply *DOCS* anytime to see this list.")
+    return "\n".join(lines)
+
+
 def format_search_results(tenders: list[dict], keyword: str) -> str:
     """Format tender search results for the SEARCH command."""
     if not tenders:

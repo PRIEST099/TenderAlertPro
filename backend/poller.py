@@ -54,7 +54,7 @@ def normalize_release(release: dict) -> dict | None:
     period = tender.get("tenderPeriod") or {}
     deadline = period.get("endDate", "")
 
-    source_url = f"https://ocds.umucyo.gov.rw/opendata/api/v1/releases?ocid={ocid}"
+    source_url = "https://umucyo.gov.rw"
 
     return {
         "ocid": ocid,
@@ -193,12 +193,25 @@ def poll_and_store(limit: int = None) -> int:
         tenders = tenders[:limit]
 
     new_count = 0
+    awards_count = 0
     for t in tenders:
         result = upsert_tender(t)
         if result:
             new_count += 1
 
-    print(f"[poller] Done. {len(tenders)} tenders processed, {new_count} new/updated.")
+        # Extract awards from raw_json during regular polling
+        try:
+            raw = json.loads(t.get("raw_json", "{}") or "{}")
+            from load_history import extract_awards_from_release
+            awards = extract_awards_from_release(raw)
+            for award in awards:
+                from database import upsert_award
+                upsert_award(award)
+                awards_count += 1
+        except Exception:
+            pass
+
+    print(f"[poller] Done. {len(tenders)} tenders processed, {new_count} new/updated, {awards_count} awards extracted.")
     return new_count
 
 

@@ -63,20 +63,124 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON interaction_logs(timestamp)
     """)
 
-    # Migrate existing DBs that predate these columns
-    for col, definition in [
-        ("company_name",    "TEXT DEFAULT ''"),
-        ("onboarding_step", "TEXT DEFAULT 'awaiting_name'"),
-        ("tags",            "TEXT DEFAULT ''"),
+    # ── New tables ──────────────────────────────────────────────────────
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS awards (
+            id TEXT PRIMARY KEY,
+            ocid TEXT,
+            buyer_name TEXT,
+            buyer_id TEXT,
+            category TEXT,
+            title TEXT,
+            supplier_name TEXT,
+            supplier_id TEXT,
+            award_amount REAL,
+            currency TEXT DEFAULT 'RWF',
+            award_date TEXT,
+            num_bidders INTEGER,
+            procurement_method TEXT,
+            status TEXT
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS company_profiles (
+            phone TEXT PRIMARY KEY,
+            sectors TEXT,
+            certifications TEXT,
+            typical_contract_min INTEGER,
+            typical_contract_max INTEGER,
+            employee_count TEXT,
+            past_clients TEXT,
+            district TEXT,
+            updated_at TEXT
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS user_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            doc_label TEXT,
+            file_path TEXT NOT NULL,
+            filename TEXT,
+            uploaded_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(phone, doc_type)
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS bid_pipeline (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            ocid TEXT NOT NULL,
+            status TEXT DEFAULT 'watching',
+            notes TEXT,
+            reminder_7d INTEGER DEFAULT 0,
+            reminder_3d INTEGER DEFAULT 0,
+            reminder_1d INTEGER DEFAULT 0,
+            added_at TEXT,
+            updated_at TEXT,
+            UNIQUE(phone, ocid)
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS proposals (
+            id TEXT PRIMARY KEY,
+            phone TEXT NOT NULL,
+            tender_id TEXT,
+            tender_title TEXT,
+            file_path TEXT,
+            credits_used INTEGER DEFAULT 1,
+            generated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id TEXT PRIMARY KEY,
+            phone TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            type TEXT,
+            plan TEXT,
+            credits_added INTEGER DEFAULT 0,
+            momo_transaction_id TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
+    # ── Indexes ──────────────────────────────────────────────────────
+
+    for idx_sql in [
+        "CREATE INDEX IF NOT EXISTS idx_awards_buyer ON awards(buyer_name)",
+        "CREATE INDEX IF NOT EXISTS idx_awards_supplier ON awards(supplier_name)",
+        "CREATE INDEX IF NOT EXISTS idx_awards_category ON awards(category)",
+        "CREATE INDEX IF NOT EXISTS idx_pipeline_phone ON bid_pipeline(phone)",
     ]:
+        c.execute(idx_sql)
+
+    # ── Column migrations for existing tables ────────────────────────
+
+    migrations = [
+        ("subscribers", "company_name",        "TEXT DEFAULT ''"),
+        ("subscribers", "onboarding_step",     "TEXT DEFAULT 'awaiting_name'"),
+        ("subscribers", "tags",                "TEXT DEFAULT ''"),
+        ("subscribers", "deep_analyses_used",  "INTEGER DEFAULT 0"),
+        ("subscribers", "subscription_tier",   "TEXT DEFAULT 'free'"),
+        ("subscribers", "analysis_reset_date", "TEXT DEFAULT ''"),
+        ("subscribers", "credits",             "INTEGER DEFAULT 0"),
+        ("tenders",     "tags",                "TEXT DEFAULT ''"),
+        ("tenders",     "deep_analysis",       "TEXT DEFAULT ''"),
+    ]
+    for table, col, definition in migrations:
         try:
-            c.execute(f"ALTER TABLE subscribers ADD COLUMN {col} {definition}")
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
         except Exception:
             pass
-    try:
-        c.execute("ALTER TABLE tenders ADD COLUMN tags TEXT DEFAULT ''")
-    except Exception:
-        pass
 
     conn.commit()
     conn.close()
@@ -319,3 +423,367 @@ def save_ai_summary(ocid: str, summary: str, tags: str = ""):
         c.execute("UPDATE tenders SET ai_summary = ? WHERE ocid = ?", (summary, ocid))
     conn.commit()
     conn.close()
+
+
+# ── Awards (Historical Intelligence) ─────────────────────────────────────
+
+def upsert_award(award: dict):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO awards (id, ocid, buyer_name, buyer_id, category, title,
+                           supplier_name, supplier_id, award_amount, currency,
+                           award_date, num_bidders, procurement_method, status)
+        VALUES (:id, :ocid, :buyer_name, :buyer_id, :category, :title,
+                :supplier_name, :supplier_id, :award_amount, :currency,
+                :award_date, :num_bidders, :procurement_method, :status)
+        ON CONFLICT(id) DO UPDATE SET
+            award_amount = excluded.award_amount,
+            status = excluded.status,
+            award_date = excluded.award_date
+    """, award)
+    conn.commit()
+    conn.close()
+
+
+def get_buyer_history(buyer_name: str, category: str = None, limit: int = 20) -> list:
+    """Get past awards from the same buyer, optionally filtered by category."""
+    conn = get_conn()
+    c = conn.cursor()
+    if category:
+        c.execute("""
+            SELECT * FROM awards
+            WHERE buyer_name = ? AND category = ?
+            ORDER BY award_date DESC LIMIT ?
+        """, (buyer_name, category, limit))
+    else:
+        c.execute("""
+            SELECT * FROM awards
+            WHERE buyer_name = ?
+            ORDER BY award_date DESC LIMIT ?
+        """, (buyer_name, limit))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_supplier_wins(supplier_name: str, limit: int = 20) -> list:
+    """How often a supplier wins contracts."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT * FROM awards WHERE supplier_name = ?
+        ORDER BY award_date DESC LIMIT ?
+    """, (supplier_name, limit))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_competition_stats(buyer_name: str, category: str = None) -> dict:
+    """Aggregate competition stats for a buyer: avg bidders, avg amount, top suppliers."""
+    conn = get_conn()
+    c = conn.cursor()
+
+    if category:
+        c.execute("""
+            SELECT AVG(num_bidders) as avg_bidders,
+                   AVG(award_amount) as avg_amount,
+                   COUNT(*) as total_awards
+            FROM awards WHERE buyer_name = ? AND category = ?
+        """, (buyer_name, category))
+    else:
+        c.execute("""
+            SELECT AVG(num_bidders) as avg_bidders,
+                   AVG(award_amount) as avg_amount,
+                   COUNT(*) as total_awards
+            FROM awards WHERE buyer_name = ?
+        """, (buyer_name,))
+
+    stats = dict(c.fetchone())
+
+    # Top suppliers for this buyer
+    if category:
+        c.execute("""
+            SELECT supplier_name, COUNT(*) as wins,
+                   AVG(award_amount) as avg_amount,
+                   SUM(award_amount) as total_value
+            FROM awards WHERE buyer_name = ? AND category = ?
+            GROUP BY supplier_name ORDER BY wins DESC LIMIT 5
+        """, (buyer_name, category))
+    else:
+        c.execute("""
+            SELECT supplier_name, COUNT(*) as wins,
+                   AVG(award_amount) as avg_amount,
+                   SUM(award_amount) as total_value
+            FROM awards WHERE buyer_name = ?
+            GROUP BY supplier_name ORDER BY wins DESC LIMIT 5
+        """, (buyer_name,))
+
+    stats["top_suppliers"] = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return stats
+
+
+def get_awards_count() -> int:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM awards")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+
+# ── Deep Analysis Cache ──────────────────────────────────────────────────
+
+def save_deep_analysis(ocid: str, analysis_json: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE tenders SET deep_analysis = ? WHERE ocid = ?", (analysis_json, ocid))
+    conn.commit()
+    conn.close()
+
+
+def get_deep_analysis(ocid: str) -> str | None:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT deep_analysis FROM tenders WHERE ocid = ?", (ocid,))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0]:
+        return row[0]
+    return None
+
+
+# ── Subscriber Quota & Credits ───────────────────────────────────────────
+
+def check_analysis_quota(phone: str) -> dict:
+    """Check if user can perform a deep analysis. Auto-resets monthly."""
+    sub = get_subscriber(phone)
+    if not sub:
+        return {"allowed": False, "used": 0, "limit": 0, "tier": "none"}
+
+    tier = sub.get("subscription_tier", "free")
+    used = sub.get("deep_analyses_used", 0)
+    reset_date = sub.get("analysis_reset_date", "")
+
+    # Monthly reset check
+    current_month = datetime.utcnow().strftime("%Y-%m")
+    if reset_date[:7] != current_month:
+        used = 0
+        update_subscriber(phone, deep_analyses_used=0, analysis_reset_date=datetime.utcnow().isoformat())
+
+    limits = {"free": 3, "pro": 999, "business": 999}
+    limit = limits.get(tier, 3)
+
+    return {"allowed": used < limit, "used": used, "limit": limit, "tier": tier}
+
+
+def increment_analysis_count(phone: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        UPDATE subscribers
+        SET deep_analyses_used = COALESCE(deep_analyses_used, 0) + 1
+        WHERE phone = ?
+    """, (phone,))
+    conn.commit()
+    conn.close()
+
+
+# ── Company Profiles ─────────────────────────────────────────────────────
+
+def save_company_profile(phone: str, profile: dict):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO company_profiles (phone, sectors, certifications,
+            typical_contract_min, typical_contract_max, employee_count,
+            past_clients, district, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(phone) DO UPDATE SET
+            sectors = excluded.sectors,
+            certifications = excluded.certifications,
+            typical_contract_min = excluded.typical_contract_min,
+            typical_contract_max = excluded.typical_contract_max,
+            employee_count = excluded.employee_count,
+            past_clients = excluded.past_clients,
+            district = excluded.district,
+            updated_at = excluded.updated_at
+    """, (
+        phone,
+        profile.get("sectors", ""),
+        profile.get("certifications", ""),
+        profile.get("typical_contract_min"),
+        profile.get("typical_contract_max"),
+        profile.get("employee_count", ""),
+        profile.get("past_clients", ""),
+        profile.get("district", ""),
+        datetime.utcnow().isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_company_profile(phone: str) -> dict | None:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM company_profiles WHERE phone = ?", (phone,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# ── User Documents ───────────────────────────────────────────────────────
+
+def upsert_user_document(phone: str, doc_type: str, doc_label: str, file_path: str, filename: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO user_documents (phone, doc_type, doc_label, file_path, filename, uploaded_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(phone, doc_type) DO UPDATE SET
+            doc_label = excluded.doc_label,
+            file_path = excluded.file_path,
+            filename = excluded.filename,
+            uploaded_at = excluded.uploaded_at
+    """, (phone, doc_type, doc_label, file_path, filename, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_user_documents(phone: str) -> list:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM user_documents WHERE phone = ?", (phone,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_user_document(phone: str, doc_type: str) -> dict | None:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM user_documents WHERE phone = ? AND doc_type = ?", (phone, doc_type))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# ── Bid Pipeline ─────────────────────────────────────────────────────────
+
+def add_to_pipeline(phone: str, ocid: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO bid_pipeline (phone, ocid, status, added_at, updated_at)
+        VALUES (?, ?, 'watching', ?, ?)
+        ON CONFLICT(phone, ocid) DO NOTHING
+    """, (phone, ocid, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_pipeline(phone: str) -> list:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT bp.*, t.title, t.buyer_name, t.deadline, t.value_amount
+        FROM bid_pipeline bp
+        LEFT JOIN tenders t ON bp.ocid = t.ocid
+        WHERE bp.phone = ?
+        ORDER BY bp.added_at DESC
+    """, (phone,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def update_pipeline_status(phone: str, ocid: str, status: str):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        UPDATE bid_pipeline SET status = ?, updated_at = ?
+        WHERE phone = ? AND ocid = ?
+    """, (status, datetime.utcnow().isoformat(), phone, ocid))
+    conn.commit()
+    conn.close()
+
+
+# ── Proposals ────────────────────────────────────────────────────────────
+
+def log_proposal(phone: str, tender_id: str, tender_title: str, file_path: str):
+    import uuid
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO proposals (id, phone, tender_id, tender_title, file_path, generated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (str(uuid.uuid4()), phone, tender_id, tender_title, file_path, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_proposal_count(phone: str) -> int:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM proposals WHERE phone = ?", (phone,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+
+# ── Payments ─────────────────────────────────────────────────────────────
+
+def log_payment(phone: str, amount: int, pay_type: str, plan: str = "", credits_added: int = 0) -> str:
+    import uuid
+    payment_id = str(uuid.uuid4())[:8]
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO payments (id, phone, amount, type, plan, credits_added, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+    """, (payment_id, phone, amount, pay_type, plan, credits_added, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+    return payment_id
+
+
+def confirm_payment(payment_id: str) -> bool:
+    """Confirm a payment and apply credits/plan to the subscriber."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM payments WHERE id = ? AND status = 'pending'", (payment_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return False
+
+    payment = dict(row)
+    phone = payment["phone"]
+
+    c.execute("UPDATE payments SET status = 'confirmed' WHERE id = ?", (payment_id,))
+
+    if payment["type"] == "subscription":
+        c.execute("""
+            UPDATE subscribers SET subscription_tier = ?, credits = credits + ?
+            WHERE phone = ?
+        """, (payment["plan"], payment.get("credits_added", 0), phone))
+    elif payment["type"] == "credits":
+        c.execute("""
+            UPDATE subscribers SET credits = COALESCE(credits, 0) + ?
+            WHERE phone = ?
+        """, (payment["credits_added"], phone))
+
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_payment_history(phone: str) -> list:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM payments WHERE phone = ? ORDER BY created_at DESC", (phone,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows

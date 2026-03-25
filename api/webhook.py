@@ -15,16 +15,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
+import os
+
 from database import (  # noqa: E402
     add_subscriber, remove_subscriber, get_subscriber,
     update_subscriber, get_new_tenders, search_tenders,
     get_tenders_for_subscriber, init_db,
     log_interaction, get_interaction_count,
+    check_analysis_quota, increment_analysis_count,
+    get_company_profile, save_company_profile,
+    get_user_documents, add_to_pipeline, get_pipeline, update_pipeline_status,
+    log_payment, confirm_payment,
 )
 from whatsapp import (  # noqa: E402
     send_text, send_sector_list, send_buttons, send_tender_digest,
     send_tender_list, format_tender_detail,
     format_tender_alert, format_status_message, format_search_results,
+    format_deep_analysis, format_pipeline, format_documents_checklist,
 )
 
 VALID_SECTORS = ["ict", "construction", "health", "education", "agriculture", "consulting", "supply", "all"]
@@ -67,6 +74,13 @@ _user_tender_cache: dict[str, list[dict]] = {}
 MAIN_BUTTONS = ["View Tenders", "My Status", "Help"]
 AFTER_ACTION_BUTTONS = ["View Tenders", "Change Sector", "Help"]
 AFTER_TENDERS_BUTTONS = ["Change Sector", "My Status", "Help"]
+AFTER_DETAIL_BUTTONS = ["Deep Analyze", "View Tenders", "Help"]
+AFTER_ANALYSIS_BUTTONS = ["Save to Pipeline", "View Tenders", "Help"]
+
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
+
+# Cache for current tender being viewed (for Deep Analyze flow)
+_user_current_tender: dict[str, dict] = {}
 
 # Button titles from templates + confirmation
 BTN_VIEW_TENDERS   = "view tenders"
@@ -80,6 +94,9 @@ BTN_KEEP_ALERTS    = "no, keep alerts"
 BTN_GET_STARTED    = "get started"
 BTN_MY_STATUS      = "my status"
 BTN_HELP           = "help"
+BTN_DEEP_ANALYZE   = "deep analyze"
+BTN_SAVE_PIPELINE  = "save to pipeline"
+BTN_GEN_PROPOSAL   = "generate proposal"
 
 
 # ── Payload parsing ───────────────────────────────────────────────────────
@@ -265,6 +282,30 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
         send_text(phone, HELP_TEXT)
         send_buttons(phone, "Quick actions:", MAIN_BUTTONS)
 
+    # Deep Analyze
+    elif button_title == BTN_DEEP_ANALYZE:
+        handle_deep_analyze(phone, sub)
+
+    # Save to Pipeline
+    elif button_title == BTN_SAVE_PIPELINE:
+        tender = _user_current_tender.get(phone)
+        if tender:
+            add_to_pipeline(phone, tender["ocid"])
+            send_text(phone, f"✅ Saved to your bid pipeline as *watching*.\n\nReply *PIPELINE* to see your tracked tenders.")
+            send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        else:
+            send_text(phone, "No tender selected. Browse tenders first:")
+            send_buttons(phone, "Choose an action:", MAIN_BUTTONS)
+
+    # Generate Proposal
+    elif button_title == BTN_GEN_PROPOSAL:
+        tender = _user_current_tender.get(phone)
+        if tender:
+            handle_propose(phone, tender.get("ocid", ""), sub)
+        else:
+            send_text(phone, "No tender selected. Browse tenders first:")
+            send_buttons(phone, "Choose an action:", MAIN_BUTTONS)
+
     else:
         send_text(phone, "I didn't recognise that button. Here's what I can do:")
         send_buttons(phone, "Choose an action:", MAIN_BUTTONS)
@@ -323,9 +364,12 @@ def handle_tender_selection(phone: str, content: str, sub: dict):
     # Send the full tender detail
     detail = format_tender_detail(tender)
     send_text(phone, detail)
-    send_buttons(phone, "What's next?", ["View Tenders", "Change Sector", "Help"])
 
-    # Clear cache for this user
+    # Store current tender for Deep Analyze flow, then show buttons
+    _user_current_tender[phone] = tender
+    send_buttons(phone, "Want deeper intel on this tender?", AFTER_DETAIL_BUTTONS)
+
+    # Clear the list cache (but keep current tender)
     _user_tender_cache.pop(phone, None)
 
 
@@ -397,6 +441,47 @@ def handle_text(phone: str, text: str, sub: dict):
         )
         send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
 
+    # ── DOCS (document checklist) ──
+    elif text_lower == "docs":
+        docs = get_user_documents(phone)
+        send_text(phone, format_documents_checklist(docs))
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+    # ── PIPELINE (bid tracker) ──
+    elif text_lower == "pipeline":
+        items = get_pipeline(phone)
+        send_text(phone, format_pipeline(items))
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+    # ── CREDITS (check balance) ──
+    elif text_lower == "credits":
+        credits = sub.get("credits", 0)
+        tier = sub.get("subscription_tier", "free")
+        send_text(phone, f"💳 *Your Credits*\n\nPlan: *{tier.title()}*\nProposal credits: *{credits}*\n\nReply *BUY CREDITS* to top up.")
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+    # ── BUY CREDITS ──
+    elif text_lower in ("buy credits", "buy", "upgrade", "subscribe", "pricing"):
+        handle_buy_credits(phone)
+
+    # ── PAID [amount] ──
+    elif text_lower.startswith("paid "):
+        handle_paid_confirmation(phone, text)
+
+    # ── SAVE [tender_id] ──
+    elif text_lower.startswith("save "):
+        tender_ref = text[5:].strip()
+        handle_save_to_pipeline(phone, tender_ref)
+
+    # ── PROPOSE [tender_id] ──
+    elif text_lower.startswith("propose "):
+        tender_ref = text[8:].strip()
+        handle_propose(phone, tender_ref, sub)
+
+    # ── ADMIN commands ──
+    elif text_lower.startswith("admin "):
+        handle_admin(phone, text)
+
     # ── UNKNOWN COMMAND ──
     else:
         send_text(
@@ -405,6 +490,339 @@ def handle_text(phone: str, text: str, sub: dict):
             "Try one of the buttons below, or type *HELP* for all commands."
         )
         send_buttons(phone, "Choose an action:", MAIN_BUTTONS)
+
+
+# ── Deep Analyze handler ──────────────────────────────────────────────────
+
+PAYWALL_MESSAGE = (
+    "🔒 *You've used your 3 free deep analyses this month.*\n\n"
+    "Upgrade to *TenderAlert Pro* to unlock:\n"
+    "  ✅ Unlimited deep analyses\n"
+    "  ✅ Historical winner intelligence\n"
+    "  ✅ Bid pipeline tracker\n"
+    "  ✅ Priority alerts\n\n"
+    "*Pro: RWF 75,000/month*\n"
+    "*Business: RWF 180,000/month*\n\n"
+    "Reply *BUY CREDITS* to see payment options."
+)
+
+
+def handle_deep_analyze(phone: str, sub: dict):
+    """Perform AI deep analysis on the last-viewed tender."""
+    tender = _user_current_tender.get(phone)
+    if not tender:
+        send_text(phone, "I lost track of which tender you were viewing. Please select one again:")
+        tenders = get_tenders_for_subscriber(phone)
+        if tenders:
+            _user_tender_cache[phone] = tenders[:10]
+            send_tender_list(phone, tenders)
+        else:
+            send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
+        return
+
+    # Check quota
+    quota = check_analysis_quota(phone)
+    if not quota["allowed"]:
+        send_text(phone, PAYWALL_MESSAGE)
+        send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
+        return
+
+    send_text(phone, "🔍 _Performing deep analysis with historical intelligence... this takes 10-15 seconds..._")
+
+    try:
+        from ai_enrichment import deep_analyze_tender
+        analysis = deep_analyze_tender(tender)
+    except Exception as e:
+        print(f"[webhook] Deep analysis error: {e}")
+        analysis = None
+
+    if not analysis:
+        send_text(phone, "Sorry, the deep analysis failed. Please try again later.")
+        send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
+        return
+
+    # Send formatted multi-message analysis
+    messages = format_deep_analysis(analysis, tender)
+    for msg in messages:
+        send_text(phone, msg)
+
+    send_buttons(phone, "What's next?", AFTER_ANALYSIS_BUTTONS)
+
+    # Increment counter and log
+    increment_analysis_count(phone)
+    log_interaction(phone, "outbound", "deep_analysis", f"deep:{tender.get('ocid', '')}", command="deep_analyze")
+    _user_current_tender.pop(phone, None)
+
+
+# ── Document handling ────────────────────────────────────────────────────
+
+DOCUMENT_TYPES = {
+    "rdb": "RDB Company Registration Certificate",
+    "rra": "RRA Tax Clearance Certificate",
+    "rssb": "RSSB Certificate",
+    "vat": "VAT Certificate",
+    "profile": "Company Profile / Brochure",
+    "contract": "Past Contract / Reference Letter",
+    "cv": "Key Personnel CV",
+    "iso": "ISO or Other Certification",
+}
+
+
+def handle_incoming_document(phone: str, entry: dict):
+    """Handle a document (PDF) sent by the user."""
+    try:
+        msg = entry["changes"][0]["value"]["messages"][0]
+        doc = msg.get("document", {})
+        media_id = doc.get("id")
+        filename = doc.get("filename", "document.pdf")
+        caption = (doc.get("caption") or msg.get("text", {}).get("body", "")).strip().lower()
+    except (KeyError, IndexError):
+        send_text(phone, "I couldn't process that document. Please try again.")
+        return
+
+    # Detect document type from caption
+    doc_type = "other"
+    for key in DOCUMENT_TYPES:
+        if key in caption:
+            doc_type = key
+            break
+
+    try:
+        from documents import download_whatsapp_media, save_document
+        from database import upsert_user_document
+
+        file_bytes = download_whatsapp_media(media_id)
+        if not file_bytes:
+            send_text(phone, "Failed to download the document. Please try sending it again.")
+            return
+
+        file_path = save_document(phone, doc_type, filename, file_bytes)
+        doc_label = DOCUMENT_TYPES.get(doc_type, "Other Document")
+        upsert_user_document(phone, doc_type, doc_label, file_path, filename)
+
+        docs = get_user_documents(phone)
+        send_text(phone, f"✅ *{doc_label} saved!*\n\n{format_documents_checklist(docs)}")
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+    except Exception as e:
+        print(f"[webhook] Document handling error: {e}")
+        send_text(phone, "Something went wrong processing your document. Please try again.")
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+
+# ── Pipeline handler ─────────────────────────────────────────────────────
+
+def handle_save_to_pipeline(phone: str, tender_ref: str):
+    """Save a tender to the user's bid pipeline."""
+    from database import get_conn
+    conn = get_conn()
+    c = conn.cursor()
+    # Find tender by partial OCID match
+    c.execute("SELECT ocid, title FROM tenders WHERE ocid LIKE ? LIMIT 1", (f"%{tender_ref}%",))
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        send_text(phone, f"No tender found matching '{tender_ref}'. Try the full reference number.")
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        return
+
+    add_to_pipeline(phone, row[0])
+    send_text(phone, f"✅ *Saved to pipeline:*\n{row[1][:60]}\n\nReply *PIPELINE* to see your tracked tenders.")
+    send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+
+# ── Proposal handler ─────────────────────────────────────────────────────
+
+def handle_propose(phone: str, tender_ref: str, sub: dict):
+    """Generate an AI proposal for a tender."""
+    credits = sub.get("credits", 0)
+    if credits < 1:
+        send_text(
+            phone,
+            "🔒 *Proposal generation requires 1 credit.*\n\n"
+            f"Your balance: *{credits} credits*\n\n"
+            "Reply *BUY CREDITS* to purchase credits."
+        )
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        return
+
+    from database import get_conn
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM tenders WHERE ocid LIKE ? LIMIT 1", (f"%{tender_ref}%",))
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        send_text(phone, f"No tender found matching '{tender_ref}'.")
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        return
+
+    tender = dict(row)
+    send_text(phone, "📝 _Generating your proposal draft... this takes 20-30 seconds..._")
+
+    try:
+        from documents import load_document_as_base64
+        from ai_enrichment import generate_proposal_content
+        from pdf_builder import build_proposal_pdf, save_proposal_pdf
+        from database import log_proposal
+
+        # Load user documents
+        docs = get_user_documents(phone)
+        docs_base64 = []
+        for doc in docs:
+            b64 = load_document_as_base64(doc["file_path"])
+            if b64:
+                docs_base64.append({
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": b64}
+                })
+
+        profile = get_company_profile(phone) or {}
+        profile["company_name"] = sub.get("company_name", "")
+
+        proposal = generate_proposal_content(tender, docs_base64, profile)
+        if not proposal:
+            send_text(phone, "Sorry, proposal generation failed. Your credit was not deducted. Try again later.")
+            send_buttons(phone, "What's next?", MAIN_BUTTONS)
+            return
+
+        pdf_bytes = build_proposal_pdf(proposal, tender, sub)
+        file_path = save_proposal_pdf(phone, tender.get("ocid", ""), pdf_bytes)
+
+        # Deduct credit
+        update_subscriber(phone, credits=credits - 1)
+        log_proposal(phone, tender.get("ocid", ""), tender.get("title", ""), file_path)
+
+        # Send the PDF (for now send a success message — PDF sending via WhatsApp requires public URL)
+        send_text(
+            phone,
+            f"✅ *Proposal draft generated!*\n\n"
+            f"📋 Includes: Cover letter, company profile, methodology, experience, document checklist.\n\n"
+            f"⚠️ *Before submitting:*\n"
+            f"  1. Review and customize the methodology\n"
+            f"  2. Add your financial proposal separately\n"
+            f"  3. Attach your actual certificate documents\n\n"
+            f"Credits remaining: *{credits - 1}*\n"
+            f"Reply *BUY CREDITS* to top up."
+        )
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+    except Exception as e:
+        print(f"[webhook] Proposal generation error: {e}")
+        send_text(phone, "Something went wrong generating the proposal. Your credit was not deducted.")
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+
+# ── Buy credits / payment ────────────────────────────────────────────────
+
+MOMO_NUMBER = os.getenv("MOMO_NUMBER", "078XXXXXXX")
+
+
+def handle_buy_credits(phone: str):
+    send_text(
+        phone,
+        f"💳 *TenderAlert Pro — Pricing*\n\n"
+        f"*Subscriptions:*\n"
+        f"  🟢 Pro: RWF 75,000/month\n"
+        f"     Unlimited analyses + pipeline tracker\n"
+        f"  🔵 Business: RWF 180,000/month\n"
+        f"     Everything + 5 proposal credits/month\n\n"
+        f"*Proposal Credits:*\n"
+        f"  1 credit  — RWF 15,000\n"
+        f"  3 credits — RWF 40,000 (save RWF 5,000)\n"
+        f"  10 credits — RWF 120,000 (save RWF 30,000)\n\n"
+        f"*How to pay (MTN MoMo):*\n"
+        f"Send to: *{MOMO_NUMBER}*\n"
+        f"Reference: your WhatsApp number\n\n"
+        f"After payment, reply *PAID [amount]*\n"
+        f"Example: *PAID 75000*"
+    )
+    send_buttons(phone, "Questions?", ["View Tenders", "My Status", "Help"])
+
+
+def handle_paid_confirmation(phone: str, text: str):
+    try:
+        amount = int(text.lower().replace("paid", "").strip())
+    except ValueError:
+        send_text(phone, "Please specify the amount. Example: *PAID 75000*")
+        return
+
+    payment_id = log_payment(phone, amount, pay_type="pending", credits_added=0)
+    send_text(
+        phone,
+        f"✅ *Payment of RWF {amount:,} noted!*\n\n"
+        f"Payment ID: *{payment_id}*\n"
+        f"We'll verify and credit your account within 15 minutes.\n\n"
+        f"Reply *CREDITS* to check your balance."
+    )
+    send_buttons(phone, "While you wait:", MAIN_BUTTONS)
+
+
+# ── Admin commands ───────────────────────────────────────────────────────
+
+def handle_admin(phone: str, text: str):
+    """Handle admin commands: admin [secret] [command] [args]"""
+    parts = text.split()
+    if len(parts) < 3 or not ADMIN_SECRET:
+        return
+
+    secret = parts[1]
+    if secret != ADMIN_SECRET:
+        return  # Silently ignore wrong secret
+
+    cmd = parts[2].lower()
+
+    if cmd == "upgrade" and len(parts) >= 5:
+        target = parts[3]
+        plan = parts[4].lower()
+        if plan in ("pro", "business"):
+            credits_add = 5 if plan == "business" else 0
+            update_subscriber(target, subscription_tier=plan, credits=credits_add)
+            send_text(phone, f"✅ Upgraded {target} to *{plan}*" + (f" with {credits_add} credits" if credits_add else ""))
+        else:
+            send_text(phone, "Invalid plan. Use: pro or business")
+
+    elif cmd == "credits" and len(parts) >= 5:
+        target = parts[3]
+        try:
+            amount = int(parts[4])
+            sub = get_subscriber(target)
+            if sub:
+                new_credits = (sub.get("credits") or 0) + amount
+                update_subscriber(target, credits=new_credits)
+                send_text(phone, f"✅ Added {amount} credits to {target}. New balance: {new_credits}")
+            else:
+                send_text(phone, f"Subscriber {target} not found.")
+        except ValueError:
+            send_text(phone, "Invalid amount.")
+
+    elif cmd == "confirm" and len(parts) >= 4:
+        payment_id = parts[3]
+        if confirm_payment(payment_id):
+            send_text(phone, f"✅ Payment {payment_id} confirmed and applied.")
+        else:
+            send_text(phone, f"Payment {payment_id} not found or already confirmed.")
+
+    elif cmd == "stats":
+        from database import get_active_subscribers, get_awards_count, get_conn
+        subs = get_active_subscribers()
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM tenders")
+        total_tenders = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM proposals")
+        total_proposals = c.fetchone()[0]
+        conn.close()
+        send_text(
+            phone,
+            f"📊 *Admin Stats*\n\n"
+            f"Subscribers: {len(subs)}\n"
+            f"Tenders: {total_tenders}\n"
+            f"Awards: {get_awards_count()}\n"
+            f"Proposals generated: {total_proposals}"
+        )
 
 
 # ── Rate limiting ──────────────────────────────────────────────────────────
@@ -483,6 +901,9 @@ def process_webhook_entry(entry: dict):
             update_subscriber(phone, sectors=sector, onboarding_step="complete")
             send_text(phone, f"✅ Updated! You'll now receive alerts for *{label}*.")
             send_buttons(phone, "What's next?", AFTER_ACTION_BUTTONS)
+
+    elif msg_type == "document":
+        handle_incoming_document(phone, entry)
 
     elif msg_type == "text" and content:
         handle_text(phone, content, sub)

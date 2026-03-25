@@ -34,5 +34,8 @@ out/
 .DS_Store
 Thumbs.db
 
+# User documents & generated proposals (sensitive)
+storage/
+
 # Claude
 .claude/
