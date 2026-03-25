@@ -109,7 +109,7 @@ def parse_phone(entry: dict) -> str | None:
 
 
 def parse_message(entry: dict) -> tuple[str, str]:
-    """Return (msg_type, content). msg_type: text, button_reply, list_reply, unknown."""
+    """Return (msg_type, content). msg_type: text, button_reply, list_reply, document, or raw WhatsApp type."""
     try:
         msg = entry["changes"][0]["value"]["messages"][0]
     except (KeyError, IndexError):
@@ -749,11 +749,37 @@ def handle_paid_confirmation(phone: str, text: str):
         send_text(phone, "Please specify the amount. Example: *PAID 75000*")
         return
 
-    payment_id = log_payment(phone, amount, pay_type="pending", credits_added=0)
+    # Determine payment type, plan, and credits from amount
+    PAYMENT_MAP = {
+        75000:  ("subscription", "pro", 0),
+        180000: ("subscription", "business", 5),
+        15000:  ("credits", "", 1),
+        40000:  ("credits", "", 3),
+        120000: ("credits", "", 10),
+    }
+
+    pay_type, plan, credits_added = PAYMENT_MAP.get(amount, ("credits", "", 0))
+    if amount not in PAYMENT_MAP:
+        # Unknown amount — log as pending for admin review
+        pay_type = "pending"
+        plan = ""
+        credits_added = 0
+
+    payment_id = log_payment(phone, amount, pay_type=pay_type, plan=plan, credits_added=credits_added)
+
+    type_desc = ""
+    if pay_type == "subscription":
+        type_desc = f"Plan: *{plan.title()}*"
+    elif credits_added > 0:
+        type_desc = f"Credits: *{credits_added}*"
+    else:
+        type_desc = "Pending admin review"
+
     send_text(
         phone,
         f"✅ *Payment of RWF {amount:,} noted!*\n\n"
         f"Payment ID: *{payment_id}*\n"
+        f"{type_desc}\n\n"
         f"We'll verify and credit your account within 15 minutes.\n\n"
         f"Reply *CREDITS* to check your balance."
     )
@@ -844,6 +870,8 @@ def resolve_command(msg_type: str, content: str) -> str:
         return f"button:{content}"
     if msg_type == "list_reply":
         return f"sector_select:{content}"
+    if msg_type == "document":
+        return "document_upload"
 
     text = content.lower().strip()
     if text in ("help",): return "help"
