@@ -22,9 +22,12 @@ async def list_tenders(
     enrichment: str | None = None,
     deadline_from: str | None = None,
     deadline_to: str | None = None,
+    search: str | None = None,
+    value_min: float | None = None,
+    value_max: float | None = None,
     _admin: str = Depends(get_current_admin),
 ):
-    rows, total = get_tenders_paginated(page, per_page, sector, enrichment, deadline_from, deadline_to)
+    rows, total = get_tenders_paginated(page, per_page, sector, enrichment, deadline_from, deadline_to, search, value_min, value_max)
     items = [
         TenderOut(
             ocid=r["ocid"],

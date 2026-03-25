@@ -147,6 +147,9 @@ def get_tenders_paginated(
     enrichment: str | None = None,  # "enriched", "pending", None
     deadline_from: str | None = None,
     deadline_to: str | None = None,
+    search: str | None = None,
+    value_min: float | None = None,
+    value_max: float | None = None,
 ) -> tuple[list[dict], int]:
     """Returns (rows, total_count) with pagination and filtering."""
     conn = get_conn()
@@ -170,6 +173,18 @@ def get_tenders_paginated(
     if deadline_to:
         where_clauses.append("deadline <= ?")
         params.append(deadline_to)
+
+    if search:
+        where_clauses.append("(LOWER(title) LIKE ? OR LOWER(buyer_name) LIKE ? OR LOWER(ocid) LIKE ?)")
+        term = f"%{search.lower()}%"
+        params.extend([term, term, term])
+
+    if value_min is not None:
+        where_clauses.append("value_amount >= ?")
+        params.append(value_min)
+    if value_max is not None:
+        where_clauses.append("value_amount <= ?")
+        params.append(value_max)
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
