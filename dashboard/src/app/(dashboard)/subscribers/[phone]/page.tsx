@@ -175,28 +175,29 @@ export default function SubscriberDetailPage({ params }: { params: Promise<{ pho
               {toggling ? "Updating..." : sub.rate_limit_exempt ? "Re-enable Rate Limit" : "Lift Rate Limit"}
             </Button>
 
-            {sub.subscription_tier !== "pro" && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleUpgradeTier("pro")}
-                disabled={upgrading}
-                className="border-amber-400 text-amber-700 hover:bg-amber-50"
-              >
-                <Zap className="h-4 w-4 mr-2" />
-                {upgrading ? "Upgrading..." : "Upgrade to Pro"}
-              </Button>
-            )}
-            {sub.subscription_tier === "pro" && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleUpgradeTier("free")}
-                disabled={upgrading}
-              >
-                {upgrading ? "Updating..." : "Downgrade to Free"}
-              </Button>
-            )}
+            {/* Tier upgrade/downgrade buttons */}
+            {(["free", "regular", "pro", "business"] as const).filter(t => t !== sub.subscription_tier).map(tier => {
+              const tierConfig: Record<string, { label: string; icon: string; className: string }> = {
+                free: { label: "Downgrade to Free", icon: "", className: "" },
+                regular: { label: "Set to Regular", icon: "🟢", className: "border-green-400 text-green-700 hover:bg-green-50" },
+                pro: { label: "Set to Pro", icon: "👑", className: "border-amber-400 text-amber-700 hover:bg-amber-50" },
+                business: { label: "Set to Business", icon: "💎", className: "border-blue-400 text-blue-700 hover:bg-blue-50" },
+              };
+              const cfg = tierConfig[tier];
+              return (
+                <Button
+                  key={tier}
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleUpgradeTier(tier)}
+                  disabled={upgrading}
+                  className={cfg.className}
+                >
+                  {cfg.icon && <span className="mr-1">{cfg.icon}</span>}
+                  {upgrading ? "Updating..." : cfg.label}
+                </Button>
+              );
+            })}
           </div>
         </CardContent>
       </Card>

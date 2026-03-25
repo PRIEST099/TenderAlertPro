@@ -37,7 +37,7 @@ def count_tenders() -> dict:
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM tenders")
     total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM tenders WHERE status = 'active' AND deadline > datetime('now')")
+    c.execute("SELECT COUNT(*) FROM tenders WHERE status = 'active' AND deadline >= date('now')")
     active = c.fetchone()[0]
     c.execute("SELECT COUNT(*) FROM tenders WHERE ai_summary IS NOT NULL AND ai_summary != ''")
     enriched = c.fetchone()[0]
@@ -198,8 +198,8 @@ def get_tenders_paginated(
                    deadline, status, ai_summary, fetched_at
             FROM tenders WHERE {where_sql}
             ORDER BY
-                CASE WHEN status = 'active' AND deadline > datetime('now') THEN 0 ELSE 1 END,
-                CASE WHEN deadline > datetime('now') THEN deadline END ASC,
+                CASE WHEN status = 'active' AND deadline >= date('now') THEN 0 ELSE 1 END,
+                CASE WHEN deadline >= date('now') THEN deadline END ASC,
                 CASE WHEN deadline <= datetime('now') OR deadline IS NULL THEN deadline END DESC
             LIMIT ? OFFSET ?""",
         params + [per_page, offset],

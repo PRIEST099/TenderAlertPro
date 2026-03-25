@@ -35,7 +35,16 @@ interface PaginatedResponse {
 
 function isDeadlinePassed(deadline: string | null): boolean {
   if (!deadline) return false;
-  return new Date(deadline) < new Date();
+  const dlDate = new Date(deadline).toISOString().slice(0, 10);
+  const todayDate = new Date().toISOString().slice(0, 10);
+  return dlDate < todayDate;
+}
+
+function isDeadlineToday(deadline: string | null): boolean {
+  if (!deadline) return false;
+  const dlDate = new Date(deadline).toISOString().slice(0, 10);
+  const todayDate = new Date().toISOString().slice(0, 10);
+  return dlDate === todayDate;
 }
 
 function deadlineBadge(deadline: string | null, status: string) {
@@ -47,6 +56,9 @@ function deadlineBadge(deadline: string | null, status: string) {
   }
   if (isDeadlinePassed(deadline)) {
     return <Badge variant="outline" className="text-red-500 border-red-200 bg-red-50">Expired</Badge>;
+  }
+  if (isDeadlineToday(deadline)) {
+    return <Badge className="bg-amber-600 text-white">⚠️ Ends Today</Badge>;
   }
   const days = Math.ceil((new Date(deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
   if (days <= 3) {

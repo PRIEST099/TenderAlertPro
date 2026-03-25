@@ -404,17 +404,17 @@ def format_tender_detail(tender: dict) -> str:
             from datetime import datetime, timezone
             dl = datetime.fromisoformat(tender["deadline"].replace("Z", "+00:00"))
             now = datetime.now(timezone.utc)
-            days_left = (dl - now).days
-            if days_left < 0:
+            # Compare dates (not datetimes) so "today" is handled correctly
+            if dl.date() < now.date():
                 deadline_note = " ⛔ *EXPIRED*"
-            elif days_left == 0:
-                deadline_note = " 🔴 *CLOSES TODAY*"
-            elif days_left <= 3:
-                deadline_note = f" 🔴 *{days_left}d left*"
-            elif days_left <= 7:
-                deadline_note = f" 🟡 *{days_left}d left*"
+            elif dl.date() == now.date():
+                deadline_note = " ⚠️ *Ends Today*"
+            elif (dl.date() - now.date()).days <= 3:
+                deadline_note = f" 🔴 *{(dl.date() - now.date()).days}d left*"
+            elif (dl.date() - now.date()).days <= 7:
+                deadline_note = f" 🟡 *{(dl.date() - now.date()).days}d left*"
             else:
-                deadline_note = f" 🟢 *{days_left}d left*"
+                deadline_note = f" 🟢 *{(dl.date() - now.date()).days}d left*"
         except Exception:
             pass
 
@@ -478,7 +478,8 @@ def format_status_message(sub: dict) -> str:
     credits = sub.get("credits", 0)
     analyses = sub.get("deep_analyses_used", 0)
 
-    tier_icon = "👑" if tier.lower() == "pro" else "💎" if tier.lower() == "business" else "🆓"
+    tier_icons = {"pro": "👑", "business": "💎", "regular": "🟢", "free": "🆓"}
+    tier_icon = tier_icons.get(tier.lower(), "🆓")
 
     lines = [
         f"*Your TenderAlert Pro Profile* 🇷🇼\n",
@@ -503,10 +504,11 @@ def format_status_message(sub: dict) -> str:
     return "\n".join(lines)
 
 
-def format_deep_analysis(analysis: dict, tender: dict) -> list[str]:
+def format_deep_analysis(analysis: dict, tender: dict, user_docs: list[dict] = None) -> list[str]:
     """
     Format a deep analysis result into 2-3 WhatsApp messages.
     Each message stays under 4096 characters.
+    If user_docs provided, cross-references required docs with uploaded docs.
     Returns a list of message strings.
     """
     messages = []
@@ -532,8 +534,37 @@ def format_deep_analysis(analysis: dict, tender: dict) -> list[str]:
     if docs:
         msg1_parts.append("")
         msg1_parts.append("📋 *Required Documents:*")
+
+        # Cross-reference with user's uploaded documents
+        user_doc_types = {d["doc_type"] for d in (user_docs or [])}
+        DOC_KEYWORD_MAP = {
+            "rra": ["tax", "rra", "tax clearance"],
+            "rdb": ["registration", "rdb", "company registration"],
+            "rssb": ["rssb", "social security", "pension"],
+            "vat": ["vat"],
+            "profile": ["profile", "brochure", "company profile"],
+            "contract": ["contract", "reference", "past contract", "experience"],
+            "cv": ["cv", "personnel", "staff", "curriculum"],
+            "iso": ["iso", "certification", "quality"],
+        }
+
+        on_file = 0
         for i, doc in enumerate(docs[:8], 1):
-            msg1_parts.append(f"  {i}. {doc}")
+            doc_lower = doc.lower()
+            matched = False
+            for doc_type, keywords in DOC_KEYWORD_MAP.items():
+                if doc_type in user_doc_types and any(kw in doc_lower for kw in keywords):
+                    msg1_parts.append(f"  {i}. ✅ {doc} _(on file)_")
+                    matched = True
+                    on_file += 1
+                    break
+            if not matched:
+                msg1_parts.append(f"  {i}. ❌ {doc}")
+
+        if user_docs is not None:
+            msg1_parts.append(f"\n📁 _{on_file}/{len(docs[:8])} documents on file_")
+            if on_file < len(docs[:8]):
+                msg1_parts.append("_Send PDFs with caption (rdb, rra, cv...) to upload missing docs_")
 
     criteria = analysis.get("evaluation_criteria", [])
     if criteria:

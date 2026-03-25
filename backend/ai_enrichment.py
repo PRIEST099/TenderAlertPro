@@ -130,7 +130,7 @@ def get_unenriched_tenders(limit: int = ENRICH_BATCH_SIZE) -> list[dict]:
         SELECT * FROM tenders
         WHERE (ai_summary IS NULL OR ai_summary = '')
           AND status = 'active'
-          AND deadline > datetime('now')
+          AND deadline >= date('now')
         ORDER BY deadline ASC
         LIMIT ?
         """,

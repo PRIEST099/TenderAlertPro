@@ -124,12 +124,35 @@ async def upgrade_subscriber(
         raise HTTPException(status_code=404, detail="Subscriber not found")
 
     tier = body.get("tier", "free")
-    if tier not in ("free", "pro"):
-        raise HTTPException(status_code=400, detail="Invalid tier. Use 'free' or 'pro'")
+    if tier not in ("free", "regular", "pro", "business"):
+        raise HTTPException(status_code=400, detail="Invalid tier. Use 'free', 'regular', 'pro', or 'business'")
 
-    credits = 50 if tier == "pro" else 0
+    credits_map = {"free": 0, "regular": 0, "pro": 0, "business": 5}
+    credits = credits_map.get(tier, 0)
     update_subscriber(phone, subscription_tier=tier, credits=credits)
-    return {"success": True, "tier": tier, "credits": credits, "message": f"Subscriber {'upgraded to Pro with 50 credits' if tier == 'pro' else 'downgraded to Free'}"}
+
+    # Notify the user about the tier change via WhatsApp
+    try:
+        if tier == "free":
+            send_text(phone, "Your TenderAlert Pro subscription has been changed to *Free* tier.")
+        elif tier == "regular":
+            send_text(phone, "🟢 *Your subscription has been upgraded to Regular!*\n\nYou now have full tender details and 10 views per day.\n\nReply *STATUS* to see your profile.")
+        elif tier == "pro":
+            send_text(phone, "👑 *Your subscription has been upgraded to Pro!*\n\nUnlimited tender views + deep analyses + bid pipeline.\n\nReply *STATUS* to see your profile.")
+        elif tier == "business":
+            send_text(phone, "💎 *Your subscription has been upgraded to Business!*\n\nEverything in Pro + 5 proposal credits/month.\n\nReply *STATUS* to see your profile.")
+    except Exception as e:
+        print(f"[subscribers] Failed to notify user about tier change: {e}")
+
+    # Notify admin
+    try:
+        from config import ADMIN_NOTIFICATION_NUMBER
+        if ADMIN_NOTIFICATION_NUMBER:
+            send_text(ADMIN_NOTIFICATION_NUMBER, f"👤 *Tier Change*\n{phone} → *{tier.title()}*\n(via admin dashboard)")
+    except Exception:
+        pass
+
+    return {"success": True, "tier": tier, "credits": credits, "message": f"Subscriber updated to {tier.title()}"}
 
 
 @router.post("/{phone}/toggle-rate-limit")

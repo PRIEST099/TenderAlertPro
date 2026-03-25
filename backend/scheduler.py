@@ -40,7 +40,7 @@ def get_tenders_from_last_poll() -> list[dict]:
     c.execute("""
         SELECT * FROM tenders
         WHERE status = 'active'
-          AND deadline > datetime('now')
+          AND deadline >= date('now')
           AND fetched_at > datetime('now', '-2 hours')
         ORDER BY deadline ASC
     """)

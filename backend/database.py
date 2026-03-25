@@ -178,6 +178,8 @@ def init_db():
         ("tenders",     "deep_analysis",       "TEXT DEFAULT ''"),
         ("tenders",     "published_at",        "TEXT DEFAULT ''"),
         ("tenders",     "sub_category",        "TEXT DEFAULT ''"),
+        ("bid_pipeline", "cached_analysis",    "TEXT DEFAULT ''"),
+        ("bid_pipeline", "associated_docs",    "TEXT DEFAULT ''"),
     ]
     for table, col, definition in migrations:
         try:
@@ -227,7 +229,7 @@ def get_new_tenders(since_hours: int = 0, limit: int = 20) -> list:
         c.execute("""
             SELECT * FROM tenders
             WHERE status = 'active'
-              AND deadline > datetime('now')
+              AND deadline >= date('now')
               AND fetched_at > datetime('now', ? || ' hours')
             ORDER BY deadline ASC
             LIMIT ?
@@ -236,7 +238,7 @@ def get_new_tenders(since_hours: int = 0, limit: int = 20) -> list:
         c.execute("""
             SELECT * FROM tenders
             WHERE status = 'active'
-              AND deadline > datetime('now')
+              AND deadline >= date('now')
             ORDER BY deadline ASC
             LIMIT ?
         """, (limit,))
@@ -308,7 +310,7 @@ def search_tenders(keyword: str, limit: int = 3) -> list:
         SELECT * FROM tenders
         WHERE (title LIKE ? OR buyer_name LIKE ? OR description LIKE ?)
           AND status = 'active'
-          AND deadline > datetime('now')
+          AND deadline >= date('now')
         ORDER BY deadline ASC
         LIMIT ?
     """, (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", limit))
@@ -601,10 +603,24 @@ def check_analysis_quota(phone: str) -> dict:
         used = 0
         update_subscriber(phone, deep_analyses_used=0, analysis_reset_date=datetime.utcnow().isoformat())
 
-    limits = {"free": 3, "pro": 999, "business": 999}
+    limits = {"free": 3, "regular": 0, "pro": 999, "business": 999}
     limit = limits.get(tier, 3)
 
     return {"allowed": used < limit, "used": used, "limit": limit, "tier": tier}
+
+
+def count_tender_views_today(phone: str) -> int:
+    """Count how many tender details this user has viewed today (for Regular tier daily limit)."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT COUNT(*) FROM interaction_logs
+        WHERE phone = ? AND command = 'tender_detail'
+          AND timestamp >= date('now')
+    """, (phone,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count
 
 
 def increment_analysis_count(phone: str):
@@ -736,6 +752,65 @@ def update_pipeline_status(phone: str, ocid: str, status: str):
     """, (status, datetime.utcnow().isoformat(), phone, ocid))
     conn.commit()
     conn.close()
+
+
+def save_pipeline_analysis(phone: str, ocid: str, analysis_json: str):
+    """Cache a deep analysis snapshot in the pipeline item."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        UPDATE bid_pipeline SET cached_analysis = ?, updated_at = ?
+        WHERE phone = ? AND ocid = ?
+    """, (analysis_json, datetime.utcnow().isoformat(), phone, ocid))
+    conn.commit()
+    conn.close()
+
+
+def get_pipeline_analysis(phone: str, ocid: str) -> dict | None:
+    """Retrieve cached deep analysis from pipeline."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT cached_analysis FROM bid_pipeline WHERE phone = ? AND ocid = ?", (phone, ocid))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0]:
+        import json
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return None
+    return None
+
+
+def search_pipeline(phone: str, keyword: str) -> list:
+    """Fuzzy search pipeline items by tender title."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT bp.*, t.title, t.buyer_name, t.deadline, t.value_amount, t.deep_analysis
+        FROM bid_pipeline bp
+        LEFT JOIN tenders t ON bp.ocid = t.ocid
+        WHERE bp.phone = ? AND LOWER(t.title) LIKE ?
+        ORDER BY bp.added_at DESC
+    """, (phone, f"%{keyword.lower()}%"))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_pipeline_item(phone: str, ocid: str) -> dict | None:
+    """Fetch a single pipeline item with tender details."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT bp.*, t.title, t.buyer_name, t.deadline, t.value_amount, t.deep_analysis
+        FROM bid_pipeline bp
+        LEFT JOIN tenders t ON bp.ocid = t.ocid
+        WHERE bp.phone = ? AND bp.ocid = ?
+    """, (phone, ocid))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 # ── Proposals ────────────────────────────────────────────────────────────

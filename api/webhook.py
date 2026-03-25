@@ -23,10 +23,13 @@ from database import (  # noqa: E402
     get_tenders_for_subscriber, init_db,
     log_interaction, get_interaction_count,
     check_analysis_quota, increment_analysis_count,
+    count_tender_views_today,
     get_company_profile, save_company_profile,
     get_user_documents, add_to_pipeline, get_pipeline, update_pipeline_status,
+    save_pipeline_analysis, get_pipeline_analysis, search_pipeline,
     log_payment, confirm_payment,
 )
+from config import ADMIN_NOTIFICATION_NUMBER  # noqa: E402
 from whatsapp import (  # noqa: E402
     send_text, send_sector_list, send_buttons, send_tender_digest,
     send_tender_list, format_tender_detail,
@@ -58,6 +61,7 @@ KNOWN_COMMANDS = {
     "name", "change name", "change sector",
     "refresh", "active", "open",
     "docs", "pipeline", "credits",
+    "find", "recall",
 }
 
 HELP_TEXT = (
@@ -94,6 +98,26 @@ ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
 
 # Cache for current tender being viewed (for Deep Analyze flow)
 _user_current_tender: dict[str, dict] = {}
+
+
+# ── Content gating for free tier ─────────────────────────────────────────
+
+def gate_tender_for_tier(tender: dict, tier: str) -> dict:
+    """Strip sensitive fields from tender for free-tier users.
+    Free users can see the tender exists but not the buyer, reference, or Umucyo link."""
+    if tier != "free":
+        return tender
+    gated = dict(tender)
+    real_buyer = gated.get("buyer_name", "")
+    gated["buyer_name"] = "🔒 Upgrade to see buyer"
+    gated["ocid"] = ""
+    gated["source_url"] = ""
+    # Redact buyer name from AI summary
+    summary = gated.get("ai_summary") or ""
+    if summary and real_buyer:
+        summary = summary.replace(real_buyer, "[Buyer]")
+    gated["ai_summary"] = "🔒 _Upgrade to Regular (RWF 10,000/mo) for full details_\n\n" + summary
+    return gated
 
 # Button titles from templates + confirmation
 BTN_VIEW_TENDERS   = "view tenders"
@@ -326,7 +350,15 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
         tender = _user_current_tender.get(phone)
         if tender:
             add_to_pipeline(phone, tender["ocid"])
-            send_text(phone, f"✅ Saved to your bid pipeline as *watching*.\n\nReply *PIPELINE* to see your tracked tenders.")
+            # Cache any existing deep analysis
+            deep = tender.get("deep_analysis")
+            if deep:
+                import json as _json
+                try:
+                    save_pipeline_analysis(phone, tender["ocid"], deep if isinstance(deep, str) else _json.dumps(deep))
+                except Exception:
+                    pass
+            send_text(phone, f"✅ Saved to your bid pipeline as *watching*.\n\nReply *PIPELINE* to see your tracked tenders.\nReply *RECALL [name]* to recall the analysis later.")
             send_buttons(phone, "What's next?", MAIN_BUTTONS)
         else:
             send_text(phone, "No tender selected. Browse tenders first:")
@@ -382,6 +414,18 @@ def handle_tender_selection(phone: str, content: str, sub: dict):
             return
 
     tender = cached[idx]
+    tier = sub.get("subscription_tier", "free")
+
+    # Regular tier: 10 detail views/day
+    if tier == "regular":
+        views_today = count_tender_views_today(phone)
+        if views_today >= 10:
+            send_text(phone, REGULAR_VIEW_LIMIT_MESSAGE)
+            send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
+            return
+
+    # Log the detail view for quota tracking
+    log_interaction(phone, "outbound", "tender_detail", tender.get("ocid", ""), command="tender_detail")
 
     # Enrich on-the-fly if no AI summary exists
     if not tender.get("ai_summary"):
@@ -396,13 +440,21 @@ def handle_tender_selection(phone: str, content: str, sub: dict):
         except Exception as e:
             print(f"[webhook] On-the-fly enrichment failed: {e}")
 
+    # Apply content gating for free tier
+    display_tender = gate_tender_for_tier(tender, tier)
+
     # Send the full tender detail
-    detail = format_tender_detail(tender)
+    detail = format_tender_detail(display_tender)
     send_text(phone, detail)
 
-    # Store current tender for Deep Analyze flow, then show buttons
+    # Store ORIGINAL (ungated) tender for Deep Analyze flow
     _user_current_tender[phone] = tender
-    send_buttons(phone, "Want deeper intel on this tender?", AFTER_DETAIL_BUTTONS)
+
+    # Show appropriate buttons based on tier
+    if tier == "free":
+        send_buttons(phone, "Upgrade to unlock full details:", ["View Tenders", "My Status", "Help"])
+    else:
+        send_buttons(phone, "Want deeper intel on this tender?", AFTER_DETAIL_BUTTONS)
 
     # Clear the list cache (but keep current tender)
     _user_tender_cache.pop(phone, None)
@@ -535,6 +587,59 @@ def handle_text(phone: str, text: str, sub: dict):
         tender_ref = text[8:].strip()
         handle_propose(phone, tender_ref, sub)
 
+    # ── FIND <keyword> — search pipeline by tender name ──
+    elif text_lower.startswith("find "):
+        keyword = text[5:].strip()
+        if len(keyword) < 2:
+            send_text(phone, "Please provide a keyword. Example: *FIND construction*")
+        else:
+            results = search_pipeline(phone, keyword)
+            if results:
+                lines = [f"🔍 *Pipeline matches for \"{keyword}\":*\n"]
+                for i, item in enumerate(results[:5]):
+                    title = (item.get("title") or "Untitled")[:50]
+                    status = item.get("status", "watching")
+                    has_analysis = "📊" if item.get("cached_analysis") or item.get("deep_analysis") else ""
+                    lines.append(f"  {i+1}. {title}\n     Status: *{status}* {has_analysis}")
+                lines.append("\n_Type RECALL [name] to see saved analysis_")
+                send_text(phone, "\n".join(lines))
+            else:
+                send_text(phone, f"No pipeline items matching \"{keyword}\". Type *PIPELINE* to see all.")
+            send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+    # ── RECALL <keyword> — resend cached deep analysis from pipeline ──
+    elif text_lower.startswith("recall "):
+        keyword = text[7:].strip()
+        results = search_pipeline(phone, keyword)
+        if results:
+            item = results[0]
+            # Try cached analysis first, then tender's deep_analysis
+            import json as _json
+            cached = None
+            if item.get("cached_analysis"):
+                try:
+                    cached = _json.loads(item["cached_analysis"])
+                except Exception:
+                    pass
+            if not cached and item.get("deep_analysis"):
+                try:
+                    cached = _json.loads(item["deep_analysis"])
+                except Exception:
+                    pass
+
+            if cached:
+                user_docs = get_user_documents(phone)
+                messages = format_deep_analysis(cached, item, user_docs=user_docs)
+                for msg in messages:
+                    send_text(phone, msg)
+                send_buttons(phone, "What's next?", MAIN_BUTTONS)
+            else:
+                send_text(phone, f"No saved analysis for \"{item.get('title', keyword)[:40]}\".\n\nView the tender and tap *Deep Analyze* to generate one.")
+                send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        else:
+            send_text(phone, f"No pipeline items matching \"{keyword}\".")
+            send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
     # ── ADMIN commands ──
     elif text_lower.startswith("admin "):
         handle_admin(phone, text)
@@ -552,15 +657,22 @@ def handle_text(phone: str, text: str, sub: dict):
 # ── Deep Analyze handler ──────────────────────────────────────────────────
 
 PAYWALL_MESSAGE = (
-    "🔒 *You've used your 3 free deep analyses this month.*\n\n"
-    "Upgrade to *TenderAlert Pro* to unlock:\n"
-    "  ✅ Unlimited deep analyses\n"
-    "  ✅ Historical winner intelligence\n"
-    "  ✅ Bid pipeline tracker\n"
-    "  ✅ Priority alerts\n\n"
-    "*Pro: RWF 75,000/month*\n"
-    "*Business: RWF 180,000/month*\n\n"
-    "Reply *BUY CREDITS* to see payment options."
+    "🔒 *Deep analysis limit reached*\n\n"
+    "Upgrade your plan to continue:\n\n"
+    "🟢 *Regular — RWF 10,000/mo*\n"
+    "  Full tender info (buyer, ref, link)\n\n"
+    "👑 *Pro — RWF 75,000/mo*\n"
+    "  Unlimited deep analyses + pipeline\n\n"
+    "💎 *Business — RWF 180,000/mo*\n"
+    "  Everything + 5 proposal credits/mo\n\n"
+    "Reply *BUY CREDITS* to see all options."
+)
+
+REGULAR_VIEW_LIMIT_MESSAGE = (
+    "📊 *You've viewed 10 tenders today.*\n\n"
+    "Your Regular plan includes 10 tender views per day.\n\n"
+    "Upgrade to *Pro (RWF 75,000/mo)* for unlimited access.\n\n"
+    "Reply *BUY CREDITS* to upgrade."
 )
 
 
@@ -598,12 +710,24 @@ def handle_deep_analyze(phone: str, sub: dict):
         send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
         return
 
-    # Send formatted multi-message analysis
-    messages = format_deep_analysis(analysis, tender)
+    # Send formatted multi-message analysis with document cross-reference
+    user_docs = get_user_documents(phone)
+    messages = format_deep_analysis(analysis, tender, user_docs=user_docs)
     for msg in messages:
         send_text(phone, msg)
 
     send_buttons(phone, "What's next?", AFTER_ANALYSIS_BUTTONS)
+
+    # Cache analysis in pipeline if tender is tracked
+    import json as _json
+    try:
+        pipeline = get_pipeline(phone)
+        for item in pipeline:
+            if item.get("ocid") == tender.get("ocid"):
+                save_pipeline_analysis(phone, tender["ocid"], _json.dumps(analysis))
+                break
+    except Exception:
+        pass
 
     # Increment counter and log
     increment_analysis_count(phone)
@@ -780,21 +904,26 @@ MOMO_NUMBER = os.getenv("MOMO_NUMBER", "078XXXXXXX")
 def handle_buy_credits(phone: str):
     send_text(
         phone,
-        f"💳 *TenderAlert Pro — Pricing*\n\n"
-        f"*Subscriptions:*\n"
-        f"  🟢 Pro: RWF 75,000/month\n"
-        f"     Unlimited analyses + pipeline tracker\n"
-        f"  🔵 Business: RWF 180,000/month\n"
-        f"     Everything + 5 proposal credits/month\n\n"
-        f"*Proposal Credits:*\n"
-        f"  1 credit  — RWF 15,000\n"
-        f"  3 credits — RWF 40,000 (save RWF 5,000)\n"
-        f"  10 credits — RWF 120,000 (save RWF 30,000)\n\n"
+        f"💳 *TenderAlert Pro — Plans & Pricing*\n\n"
+        f"🟢 *Regular — RWF 10,000/month*\n"
+        f"  Full tender info (buyer, ref, link)\n"
+        f"  10 tender views per day\n\n"
+        f"👑 *Pro — RWF 75,000/month*\n"
+        f"  Unlimited tender views\n"
+        f"  Unlimited deep analyses\n"
+        f"  Bid pipeline tracker\n\n"
+        f"💎 *Business — RWF 180,000/month*\n"
+        f"  Everything in Pro\n"
+        f"  5 proposal credits/month\n\n"
+        f"📝 *Proposal Credits (add-on):*\n"
+        f"  1 credit — RWF 15,000\n"
+        f"  3 credits — RWF 40,000\n"
+        f"  10 credits — RWF 120,000\n\n"
         f"*How to pay (MTN MoMo):*\n"
         f"Send to: *{MOMO_NUMBER}*\n"
         f"Reference: your WhatsApp number\n\n"
         f"After payment, reply *PAID [amount]*\n"
-        f"Example: *PAID 75000*"
+        f"Example: *PAID 10000*"
     )
     send_buttons(phone, "Questions?", ["View Tenders", "My Status", "Help"])
 
@@ -808,6 +937,7 @@ def handle_paid_confirmation(phone: str, text: str):
 
     # Determine payment type, plan, and credits from amount
     PAYMENT_MAP = {
+        10000:  ("subscription", "regular", 0),
         75000:  ("subscription", "pro", 0),
         180000: ("subscription", "business", 5),
         15000:  ("credits", "", 1),
@@ -842,6 +972,19 @@ def handle_paid_confirmation(phone: str, text: str):
     )
     send_buttons(phone, "While you wait:", MAIN_BUTTONS)
 
+    # Notify admin about the payment
+    if ADMIN_NOTIFICATION_NUMBER:
+        admin_msg = (
+            f"💰 *Payment Received*\n\n"
+            f"From: {phone}\n"
+            f"Amount: RWF {amount:,}\n"
+            f"Type: {type_desc}\n"
+            f"ID: {payment_id}\n"
+            f"⏳ Awaiting confirmation\n\n"
+            f"To confirm: admin [secret] confirm {payment_id}"
+        )
+        send_text(ADMIN_NOTIFICATION_NUMBER, admin_msg)
+
 
 # ── Admin commands ───────────────────────────────────────────────────────
 
@@ -860,12 +1003,17 @@ def handle_admin(phone: str, text: str):
     if cmd == "upgrade" and len(parts) >= 5:
         target = parts[3]
         plan = parts[4].lower()
-        if plan in ("pro", "business"):
+        if plan in ("free", "regular", "pro", "business"):
             credits_add = 5 if plan == "business" else 0
             update_subscriber(target, subscription_tier=plan, credits=credits_add)
             send_text(phone, f"✅ Upgraded {target} to *{plan}*" + (f" with {credits_add} credits" if credits_add else ""))
+            # Notify the user about their tier change
+            if plan == "free":
+                send_text(target, "Your TenderAlert Pro subscription has been changed to *Free* tier.")
+            else:
+                send_text(target, f"🎉 *Your subscription has been upgraded to {plan.title()}!*\n\nReply *STATUS* to see your updated profile.")
         else:
-            send_text(phone, "Invalid plan. Use: pro or business")
+            send_text(phone, "Invalid plan. Use: free, regular, pro, or business")
 
     elif cmd == "credits" and len(parts) >= 5:
         target = parts[3]
