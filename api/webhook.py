@@ -23,7 +23,7 @@ from database import (  # noqa: E402
     get_tenders_for_subscriber, init_db,
     log_interaction, get_interaction_count,
     check_analysis_quota, increment_analysis_count,
-    count_tender_views_today,
+    count_tender_views_today, count_messages_today,
     get_company_profile, save_company_profile,
     get_user_documents, add_to_pipeline, get_pipeline, update_pipeline_status,
     save_pipeline_analysis, get_pipeline_analysis, search_pipeline,
@@ -116,7 +116,7 @@ def gate_tender_for_tier(tender: dict, tier: str) -> dict:
     summary = gated.get("ai_summary") or ""
     if summary and real_buyer:
         summary = summary.replace(real_buyer, "[Buyer]")
-    gated["ai_summary"] = "🔒 _Upgrade to Regular (RWF 10,000/mo) for full details_\n\n" + summary
+    gated["ai_summary"] = "🔒 _Upgrade to Regular (RWF 3,000/week) for full details_\n\n" + summary
     return gated
 
 # Button titles from templates + confirmation
@@ -277,7 +277,7 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
         if tenders:
             # Store tenders in memory for this user so we can look them up by index
             _user_tender_cache[phone] = tenders[:10]
-            send_tender_list(phone, tenders)
+            send_tender_list(phone, tenders, tier=sub.get("subscription_tier", "free") if sub else "free")
         else:
             send_text(phone, "No active tenders in your sector right now. Check back tomorrow morning! ☀️")
             send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
@@ -298,7 +298,7 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
         tenders = get_tenders_for_subscriber(phone)
         if tenders:
             _user_tender_cache[phone] = tenders[:10]
-            send_tender_list(phone, tenders)
+            send_tender_list(phone, tenders, tier=sub.get("subscription_tier", "free") if sub else "free")
         else:
             send_text(phone, "No active tenders in your sector right now.")
             send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
@@ -408,7 +408,7 @@ def handle_tender_selection(phone: str, content: str, sub: dict):
             tenders = get_tenders_for_subscriber(phone)
             if tenders:
                 _user_tender_cache[phone] = tenders[:10]
-                send_tender_list(phone, tenders)
+                send_tender_list(phone, tenders, tier=sub.get("subscription_tier", "free") if sub else "free")
             else:
                 send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
             return
@@ -453,6 +453,8 @@ def handle_tender_selection(phone: str, content: str, sub: dict):
     # Show appropriate buttons based on tier
     if tier == "free":
         send_buttons(phone, "Upgrade to unlock full details:", ["View Tenders", "My Status", "Help"])
+    elif tier == "regular":
+        send_buttons(phone, "Upgrade to Pro for deep analysis:", ["View Tenders", "Change Sector", "Help"])
     else:
         send_buttons(phone, "Want deeper intel on this tender?", AFTER_DETAIL_BUTTONS)
 
@@ -493,7 +495,7 @@ def handle_text(phone: str, text: str, sub: dict):
         tenders = get_tenders_for_subscriber(phone)
         if tenders:
             _user_tender_cache[phone] = tenders[:10]
-            send_tender_list(phone, tenders)
+            send_tender_list(phone, tenders, tier=sub.get("subscription_tier", "free") if sub else "free")
         else:
             send_text(phone, "No active tenders in your sector right now.\n\nTry *SEARCH <keyword>* to find specific tenders.")
             send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
@@ -515,7 +517,7 @@ def handle_text(phone: str, text: str, sub: dict):
         tenders = get_tenders_for_subscriber(phone)
         if tenders:
             _user_tender_cache[phone] = tenders[:10]
-            send_tender_list(phone, tenders)
+            send_tender_list(phone, tenders, tier=sub.get("subscription_tier", "free") if sub else "free")
         else:
             send_text(phone, "No active tenders in your sector right now. Try changing your sector or search for specific keywords.")
             send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
@@ -659,7 +661,7 @@ def handle_text(phone: str, text: str, sub: dict):
 PAYWALL_MESSAGE = (
     "🔒 *Deep analysis limit reached*\n\n"
     "Upgrade your plan to continue:\n\n"
-    "🟢 *Regular — RWF 10,000/mo*\n"
+    "🟢 *Regular — RWF 3,000/week*\n"
     "  Full tender info (buyer, ref, link)\n\n"
     "👑 *Pro — RWF 75,000/mo*\n"
     "  Unlimited deep analyses + pipeline\n\n"
@@ -684,12 +686,25 @@ def handle_deep_analyze(phone: str, sub: dict):
         tenders = get_tenders_for_subscriber(phone)
         if tenders:
             _user_tender_cache[phone] = tenders[:10]
-            send_tender_list(phone, tenders)
+            send_tender_list(phone, tenders, tier=sub.get("subscription_tier", "free") if sub else "free")
         else:
             send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
         return
 
-    # Check quota
+    # Deep analysis requires Pro or Business tier
+    tier = sub.get("subscription_tier", "free")
+    if tier in ("free", "regular"):
+        send_text(
+            phone,
+            "🔒 *Deep Analysis requires a Pro or Business plan.*\n\n"
+            "👑 *Pro — RWF 75,000/mo*: Unlimited deep analyses + pipeline\n"
+            "💎 *Business — RWF 180,000/mo*: Everything + 5 proposal credits\n\n"
+            "Reply *BUY CREDITS* to upgrade."
+        )
+        send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
+        return
+
+    # Check quota (for Pro/Business — effectively unlimited but tracks usage)
     quota = check_analysis_quota(phone)
     if not quota["allowed"]:
         send_text(phone, PAYWALL_MESSAGE)
@@ -905,7 +920,7 @@ def handle_buy_credits(phone: str):
     send_text(
         phone,
         f"💳 *TenderAlert Pro — Plans & Pricing*\n\n"
-        f"🟢 *Regular — RWF 10,000/month*\n"
+        f"🟢 *Regular — RWF 3,000/week*\n"
         f"  Full tender info (buyer, ref, link)\n"
         f"  10 tender views per day\n\n"
         f"👑 *Pro — RWF 75,000/month*\n"
@@ -923,7 +938,7 @@ def handle_buy_credits(phone: str):
         f"Send to: *{MOMO_NUMBER}*\n"
         f"Reference: your WhatsApp number\n\n"
         f"After payment, reply *PAID [amount]*\n"
-        f"Example: *PAID 10000*"
+        f"Example: *PAID 3000*"
     )
     send_buttons(phone, "Questions?", ["View Tenders", "My Status", "Help"])
 
@@ -937,7 +952,7 @@ def handle_paid_confirmation(phone: str, text: str):
 
     # Determine payment type, plan, and credits from amount
     PAYMENT_MAP = {
-        10000:  ("subscription", "regular", 0),
+        3000:   ("subscription", "regular", 0),
         75000:  ("subscription", "pro", 0),
         180000: ("subscription", "business", 5),
         15000:  ("credits", "", 1),
@@ -1117,11 +1132,25 @@ def process_webhook_entry(entry: dict):
 
     sub = get_subscriber(phone)
     step = sub["onboarding_step"] if sub else None
+    tier = sub.get("subscription_tier", "free") if sub else "free"
 
     # ── Onboarding gate ──
     if sub is None or step in ("awaiting_name", "awaiting_sector", "awaiting_name_update"):
         handle_onboarding(phone, msg_type, content, sub)
         return
+
+    # ── Free tier daily message limit (3/day) ──
+    FREE_DAILY_LIMIT = 3
+    if tier == "free":
+        used_today = count_messages_today(phone)
+        if used_today > FREE_DAILY_LIMIT:
+            send_text(
+                phone,
+                "🔒 *You've used your 3 free messages for today.*\n\n"
+                "Upgrade to *Regular (RWF 3,000/week)* for unlimited messaging + full tender details.\n\n"
+                "Reply *BUY CREDITS* tomorrow or upgrade now."
+            )
+            return
 
     # ── Onboarded users: full command set ──
     if msg_type == "button_reply":
@@ -1143,3 +1172,9 @@ def process_webhook_entry(entry: dict):
 
     elif msg_type == "text" and content:
         handle_text(phone, content, sub)
+
+    # ── Free tier: show remaining messages after every interaction ──
+    if tier == "free":
+        used_today = count_messages_today(phone)
+        remaining = max(0, FREE_DAILY_LIMIT - used_today)
+        send_text(phone, f"_💬 {remaining} free message(s) left today — reply *BUY CREDITS* to upgrade_")

@@ -623,6 +623,20 @@ def count_tender_views_today(phone: str) -> int:
     return count
 
 
+def count_messages_today(phone: str) -> int:
+    """Count how many inbound messages this user has sent today (for free tier daily limit)."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT COUNT(*) FROM interaction_logs
+        WHERE phone = ? AND direction = 'inbound'
+          AND timestamp >= date('now')
+    """, (phone,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+
 def increment_analysis_count(phone: str):
     conn = get_conn()
     c = conn.cursor()

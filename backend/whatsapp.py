@@ -326,11 +326,11 @@ def send_buttons(phone: str, body: str, buttons: list[str]) -> bool:
         return False
 
 
-def send_tender_list(phone: str, tenders: list[dict]) -> bool:
+def send_tender_list(phone: str, tenders: list[dict], tier: str = "pro") -> bool:
     """
     Send an interactive LIST of tenders — user taps one to see AI-enriched details.
     Each row ID is 'tender:{index}' to distinguish from sector list replies.
-    Max 10 tenders per list.
+    Max 10 tenders per list. Free tier hides buyer name.
     """
     if not tenders:
         return send_text(phone, "No active tenders found in your sector right now.")
@@ -338,9 +338,11 @@ def send_tender_list(phone: str, tenders: list[dict]) -> bool:
     rows = []
     for i, t in enumerate(tenders[:10]):
         title = t.get("title", "Untitled")[:24]  # WhatsApp max row title
-        value_str = f"RWF {t['value_amount']:,.0f}" if t.get("value_amount") else "Value TBD"
         deadline = (t.get("deadline") or "")[:10] or "No deadline"
-        desc = f"{t.get('buyer_name', '')[:30]} | {deadline}"[:72]  # Max 72 chars description
+        if tier == "free":
+            desc = f"Deadline: {deadline}"[:72]
+        else:
+            desc = f"{t.get('buyer_name', '')[:30]} | {deadline}"[:72]
 
         rows.append({
             "id": f"tender:{i}",
