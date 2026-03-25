@@ -857,7 +857,10 @@ RATE_LIMIT_PER_HOUR = 30  # Max inbound messages per user per hour
 
 
 def is_rate_limited(phone: str) -> bool:
-    """Check if a user has exceeded the rate limit."""
+    """Check if a user has exceeded the rate limit. Exempt users skip the check."""
+    sub = get_subscriber(phone)
+    if sub and sub.get("rate_limit_exempt"):
+        return False
     count = get_interaction_count(phone, hours=1)
     return count >= RATE_LIMIT_PER_HOUR
 

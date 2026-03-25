@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Send, MessageSquare, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, Send, MessageSquare, ChevronLeft, ChevronRight, Shield, ShieldOff, Crown, Zap } from "lucide-react";
 import Link from "next/link";
 
 interface SubscriberDetail {
@@ -18,6 +18,10 @@ interface SubscriberDetail {
   sectors: string;
   onboarding_step: string;
   active: boolean;
+  subscription_tier: string;
+  rate_limit_exempt: boolean;
+  credits: number;
+  deep_analyses_used: number;
   created_at: string | null;
 }
 
@@ -43,9 +47,11 @@ export default function SubscriberDetailPage({ params }: { params: Promise<{ pho
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<string | null>(null);
   const [logPage, setLogPage] = useState(1);
+  const [toggling, setToggling] = useState(false);
+  const [upgrading, setUpgrading] = useState(false);
   const logsPerPage = 20;
 
-  const { data: sub, error } = useSWR<SubscriberDetail>(
+  const { data: sub, error, mutate: mutateSub } = useSWR<SubscriberDetail>(
     `/api/subscribers/${phone}`,
     fetcher
   );
@@ -74,6 +80,27 @@ export default function SubscriberDetailPage({ params }: { params: Promise<{ pho
     }
   }
 
+  async function handleToggleRateLimit() {
+    setToggling(true);
+    try {
+      await fetchApi(`/api/subscribers/${phone}/toggle-rate-limit`, { method: "POST" });
+      mutateSub();
+    } catch { /* ignore */ }
+    finally { setToggling(false); }
+  }
+
+  async function handleUpgradeTier(tier: string) {
+    setUpgrading(true);
+    try {
+      await fetchApi(`/api/subscribers/${phone}/upgrade`, {
+        method: "POST",
+        body: JSON.stringify({ tier }),
+      });
+      mutateSub();
+    } catch { /* ignore */ }
+    finally { setUpgrading(false); }
+  }
+
   if (error) return <p className="text-red-500">Subscriber not found</p>;
   if (!sub) return <p className="text-slate-400">Loading...</p>;
 
@@ -92,7 +119,7 @@ export default function SubscriberDetailPage({ params }: { params: Promise<{ pho
           <CardTitle>Subscriber Details</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4 text-sm">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
             <div>
               <p className="text-slate-500">Phone</p>
               <p className="font-mono">{sub.phone}</p>
@@ -112,6 +139,21 @@ export default function SubscriberDetailPage({ params }: { params: Promise<{ pho
               </span>
             </div>
             <div>
+              <p className="text-slate-500">Subscription</p>
+              <Badge variant={sub.subscription_tier === "pro" ? "default" : "outline"} className={sub.subscription_tier === "pro" ? "bg-amber-500" : ""}>
+                <Crown className="h-3 w-3 mr-1" />
+                {sub.subscription_tier.toUpperCase()}
+              </Badge>
+            </div>
+            <div>
+              <p className="text-slate-500">Credits</p>
+              <p className="font-semibold">{sub.credits}</p>
+            </div>
+            <div>
+              <p className="text-slate-500">Deep Analyses Used</p>
+              <p className="font-semibold">{sub.deep_analyses_used}</p>
+            </div>
+            <div>
               <p className="text-slate-500">Joined</p>
               <p>{formatDate(sub.created_at)}</p>
             </div>
@@ -119,6 +161,42 @@ export default function SubscriberDetailPage({ params }: { params: Promise<{ pho
               <p className="text-slate-500">Total Interactions</p>
               <p className="font-semibold">{logsData?.total ?? "..."}</p>
             </div>
+          </div>
+
+          {/* Admin Controls */}
+          <div className="border-t pt-4 flex flex-wrap gap-3">
+            <Button
+              variant={sub.rate_limit_exempt ? "destructive" : "outline"}
+              size="sm"
+              onClick={handleToggleRateLimit}
+              disabled={toggling}
+            >
+              {sub.rate_limit_exempt ? <ShieldOff className="h-4 w-4 mr-2" /> : <Shield className="h-4 w-4 mr-2" />}
+              {toggling ? "Updating..." : sub.rate_limit_exempt ? "Re-enable Rate Limit" : "Lift Rate Limit"}
+            </Button>
+
+            {sub.subscription_tier !== "pro" && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleUpgradeTier("pro")}
+                disabled={upgrading}
+                className="border-amber-400 text-amber-700 hover:bg-amber-50"
+              >
+                <Zap className="h-4 w-4 mr-2" />
+                {upgrading ? "Upgrading..." : "Upgrade to Pro"}
+              </Button>
+            )}
+            {sub.subscription_tier === "pro" && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleUpgradeTier("free")}
+                disabled={upgrading}
+              >
+                {upgrading ? "Updating..." : "Downgrade to Free"}
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>

@@ -104,8 +104,50 @@ async def get_subscriber_detail(phone: str, _admin: str = Depends(get_current_ad
         sectors=sub.get("sectors", "all"),
         onboarding_step=sub.get("onboarding_step", "complete"),
         active=bool(sub.get("active", 1)),
+        subscription_tier=sub.get("subscription_tier", "free"),
+        rate_limit_exempt=bool(sub.get("rate_limit_exempt", 0)),
+        credits=sub.get("credits", 0),
+        deep_analyses_used=sub.get("deep_analyses_used", 0),
         created_at=sub.get("created_at"),
     )
+
+
+@router.post("/{phone}/upgrade")
+async def upgrade_subscriber(
+    phone: str,
+    body: dict,
+    _admin: str = Depends(get_current_admin),
+):
+    """Upgrade or downgrade a subscriber's tier."""
+    sub = get_subscriber(phone)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscriber not found")
+
+    tier = body.get("tier", "free")
+    if tier not in ("free", "pro"):
+        raise HTTPException(status_code=400, detail="Invalid tier. Use 'free' or 'pro'")
+
+    credits = 50 if tier == "pro" else 0
+    update_subscriber(phone, subscription_tier=tier, credits=credits)
+    return {"success": True, "tier": tier, "credits": credits, "message": f"Subscriber {'upgraded to Pro with 50 credits' if tier == 'pro' else 'downgraded to Free'}"}
+
+
+@router.post("/{phone}/toggle-rate-limit")
+async def toggle_rate_limit(
+    phone: str,
+    _admin: str = Depends(get_current_admin),
+):
+    """Toggle rate limit exemption for a subscriber."""
+    sub = get_subscriber(phone)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscriber not found")
+
+    current = sub.get("rate_limit_exempt", 0)
+    new_value = 0 if current else 1
+    update_subscriber(phone, rate_limit_exempt=new_value)
+
+    status = "exempt" if new_value else "enforced"
+    return {"success": True, "rate_limit_exempt": bool(new_value), "message": f"Rate limit {status} for {phone}"}
 
 
 @router.post("/{phone}/message")

@@ -173,6 +173,7 @@ def init_db():
         ("subscribers", "subscription_tier",   "TEXT DEFAULT 'free'"),
         ("subscribers", "analysis_reset_date", "TEXT DEFAULT ''"),
         ("subscribers", "credits",             "INTEGER DEFAULT 0"),
+        ("subscribers", "rate_limit_exempt",   "INTEGER DEFAULT 0"),
         ("tenders",     "tags",                "TEXT DEFAULT ''"),
         ("tenders",     "deep_analysis",       "TEXT DEFAULT ''"),
     ]

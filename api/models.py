@@ -72,6 +72,10 @@ class SubscriberDetail(BaseModel):
     sectors: str
     onboarding_step: str
     active: bool
+    subscription_tier: str = "free"
+    rate_limit_exempt: bool = False
+    credits: int = 0
+    deep_analyses_used: int = 0
     created_at: Optional[str] = None
 
 
