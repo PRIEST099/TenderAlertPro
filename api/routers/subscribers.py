@@ -146,9 +146,8 @@ async def upgrade_subscriber(
 
     # Notify admin
     try:
-        from config import ADMIN_NOTIFICATION_NUMBER
-        if ADMIN_NOTIFICATION_NUMBER:
-            send_text(ADMIN_NOTIFICATION_NUMBER, f"👤 *Tier Change*\n{phone} → *{tier.title()}*\n(via admin dashboard)")
+        from whatsapp import notify_admin
+        notify_admin(f"👤 *Tier Change*\n{phone} → *{tier.title()}*\n(via admin dashboard)")
     except Exception:
         pass
 

@@ -153,6 +153,17 @@ def init_db():
         )
     """)
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS org_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_phone TEXT NOT NULL,
+            member_phone TEXT NOT NULL,
+            role TEXT DEFAULT 'member',
+            added_at TEXT,
+            UNIQUE(owner_phone, member_phone)
+        )
+    """)
+
     # ── Indexes ──────────────────────────────────────────────────────
 
     for idx_sql in [
@@ -904,3 +915,71 @@ def get_payment_history(phone: str) -> list:
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
     return rows
+
+
+# ── Organization / Team Members ──────────────────────────────────────────
+
+MAX_ORG_MEMBERS = 3
+
+
+def add_org_member(owner_phone: str, member_phone: str) -> bool:
+    """Add a member to an org. Returns False if limit reached or already exists."""
+    if count_org_members(owner_phone) >= MAX_ORG_MEMBERS:
+        return False
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT INTO org_members (owner_phone, member_phone, role, added_at)
+            VALUES (?, ?, 'member', ?)
+        """, (owner_phone, member_phone, datetime.utcnow().isoformat()))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def remove_org_member(owner_phone: str, member_phone: str) -> bool:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM org_members WHERE owner_phone = ? AND member_phone = ?",
+              (owner_phone, member_phone))
+    removed = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return removed
+
+
+def get_org_members(owner_phone: str) -> list:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT om.member_phone, om.role, om.added_at, s.company_name
+        FROM org_members om
+        LEFT JOIN subscribers s ON om.member_phone = s.phone
+        WHERE om.owner_phone = ?
+    """, (owner_phone,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_org_owner(member_phone: str) -> str | None:
+    """Check if this phone is an org member. Return the owner's phone or None."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT owner_phone FROM org_members WHERE member_phone = ?", (member_phone,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def count_org_members(owner_phone: str) -> int:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM org_members WHERE owner_phone = ?", (owner_phone,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count

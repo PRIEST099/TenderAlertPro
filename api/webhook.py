@@ -28,13 +28,15 @@ from database import (  # noqa: E402
     get_user_documents, add_to_pipeline, get_pipeline, update_pipeline_status,
     save_pipeline_analysis, get_pipeline_analysis, search_pipeline,
     log_payment, confirm_payment,
+    add_org_member, remove_org_member, get_org_members, get_org_owner, count_org_members,
 )
-from config import ADMIN_NOTIFICATION_NUMBER  # noqa: E402
+# ADMIN_NOTIFICATION_NUMBER is used via notify_admin() in whatsapp.py
 from whatsapp import (  # noqa: E402
     send_text, send_sector_list, send_buttons, send_tender_digest,
     send_tender_list, format_tender_detail,
     format_tender_alert, format_status_message, format_search_results,
     format_deep_analysis, format_pipeline, format_documents_checklist,
+    notify_admin,
 )
 
 VALID_SECTORS = ["ict", "construction", "health", "education", "agriculture", "consulting", "supply", "energy", "other", "all"]
@@ -64,24 +66,71 @@ KNOWN_COMMANDS = {
     "find", "recall",
 }
 
-HELP_TEXT = (
-    "*TenderAlert Pro — Commands* 🇷🇼\n\n"
-    "*📋 Tenders:*\n"
-    "  • *LIST* — Browse active tenders in your sector\n"
-    "  • *REFRESH* — Fetch latest tenders from RPPA\n"
-    "  • *SEARCH <keyword>* — Find specific tenders\n\n"
-    "*👤 Account:*\n"
-    "  • *STATUS* — Your subscription & sector info\n"
-    "  • *SECTORS* — Change your sector filter\n"
-    "  • *NAME* — Update your company name\n"
-    "  • *CREDITS* — Check your credit balance\n\n"
-    "*📁 Pro Features:*\n"
-    "  • *PIPELINE* — View your bid tracker\n"
-    "  • *DOCS* — Your uploaded documents\n\n"
-    "*⚙️ Settings:*\n"
-    "  • *STOP* — Unsubscribe from alerts\n"
-    "  • *HELP* — Show this menu"
-)
+# Commands that are FREE and don't count toward the daily message limit
+FREE_COMMANDS_TEXT = {"help", "status", "me", "profile", "my status", "my profile",
+                     "buy credits", "buy", "upgrade", "pricing",
+                     "sectors", "sector", "change sector", "change sectors",
+                     "credits", "stop", "unsubscribe", "quit", "cancel", "org"}
+FREE_BUTTONS = {BTN_HELP, BTN_MY_STATUS, BTN_CHANGE_SECTOR, BTN_CHANGE_SECTORS_ALT,
+                BTN_STOP_ALERTS, BTN_UNSUBSCRIBE_ALT, BTN_CONFIRM_UNSUB, BTN_KEEP_ALERTS}
+
+
+def build_help_text(tier: str) -> str:
+    """Build tier-aware help text showing available vs locked features."""
+    has_regular = tier in ("regular", "pro", "business")
+    has_pro = tier in ("pro", "business")
+    has_biz = tier == "business"
+
+    lock_r = "" if has_regular else " 🔒"
+    lock_p = "" if has_pro else " 🔒"
+    lock_b = "" if has_biz else " 🔒"
+
+    lines = [
+        "*TenderAlert Pro — Commands* 🇷🇼\n",
+        "*🆓 Always free (no limit):*",
+        "  • *HELP* — This menu",
+        "  • *STATUS* — Your profile & plan",
+        "  • *BUY CREDITS* — Pricing & upgrade",
+        "  • *SECTORS* — Change sector filter",
+        "  • *CREDITS* — Check balance",
+        "  • *STOP* — Unsubscribe\n",
+        "*📋 Counted messages (3/day free):*",
+        "  • *LIST* — Browse active tenders",
+        "  • *SEARCH <keyword>* — Find tenders",
+        "  • *REFRESH* — Fetch latest from RPPA",
+        "  • *NAME* — Update company name\n",
+    ]
+
+    if has_regular:
+        lines.append("✅ *Regular — Full tender details*")
+        lines.append("  Buyer name, reference, Umucyo link")
+        lines.append("  10 tender views per day\n")
+    else:
+        lines.append(f"🟢 *Regular (RWF 3,000/week):*{lock_r}")
+        lines.append("  Full tender details (buyer, ref, link)")
+        lines.append("  10 tender views per day\n")
+
+    if has_pro:
+        lines.append("✅ *Pro — Advanced features*")
+    else:
+        lines.append(f"👑 *Pro (RWF 75,000/month):*{lock_p}")
+    lines.extend([
+        "  • *DEEP ANALYZE* — AI eligibility analysis",
+        "  • *PIPELINE* — Track your bids",
+        "  • *FIND / RECALL* — Search saved analyses",
+        "  • *DOCS* — Document management\n",
+    ])
+
+    if has_biz:
+        lines.append("✅ *Business — Team features*")
+    else:
+        lines.append(f"💎 *Business (RWF 180,000/month):*{lock_b}")
+    lines.extend([
+        "  • *PROPOSE* — AI proposal generator",
+        "  • *ORG* — Manage team (up to 3 members)",
+    ])
+
+    return "\n".join(lines)
 
 # Standard button sets for common responses
 # In-memory cache: phone → list of tenders (for tender selection by index)
@@ -118,6 +167,21 @@ def gate_tender_for_tier(tender: dict, tier: str) -> dict:
         summary = summary.replace(real_buyer, "[Buyer]")
     gated["ai_summary"] = "🔒 _Upgrade to Regular (RWF 3,000/week) for full details_\n\n" + summary
     return gated
+
+
+def resolve_effective_tier(phone: str, sub: dict) -> str:
+    """If user is an org member, use the org owner's tier. Otherwise use their own."""
+    tier = sub.get("subscription_tier", "free")
+    if tier in ("pro", "business"):
+        return tier
+    # Check if they're a member of a Business org
+    owner = get_org_owner(phone)
+    if owner:
+        owner_sub = get_subscriber(owner)
+        if owner_sub and owner_sub.get("subscription_tier") == "business":
+            return "pro"  # Members get Pro-level access
+    return tier
+
 
 # Button titles from templates + confirmation
 BTN_VIEW_TENDERS   = "view tenders"
@@ -338,7 +402,8 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
 
     # Help button
     elif button_title == BTN_HELP:
-        send_text(phone, HELP_TEXT)
+        tier = sub.get("subscription_tier", "free")
+        send_text(phone, build_help_text(tier))
         send_buttons(phone, "Quick actions:", MAIN_BUTTONS)
 
     # Deep Analyze
@@ -471,7 +536,8 @@ def handle_text(phone: str, text: str, sub: dict):
 
     # ── HELP ──
     if text_lower == "help":
-        send_text(phone, HELP_TEXT)
+        tier = sub.get("subscription_tier", "free")
+        send_text(phone, build_help_text(tier))
         send_buttons(phone, "Quick actions:", MAIN_BUTTONS)
 
     # ── STATUS / ME / PROFILE ──
@@ -641,6 +707,10 @@ def handle_text(phone: str, text: str, sub: dict):
         else:
             send_text(phone, f"No pipeline items matching \"{keyword}\".")
             send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+    # ── ORG — organization / team management (Business tier) ──
+    elif text_lower == "org" or text_lower.startswith("org "):
+        handle_org(phone, text, sub)
 
     # ── ADMIN commands ──
     elif text_lower.startswith("admin "):
@@ -988,17 +1058,113 @@ def handle_paid_confirmation(phone: str, text: str):
     send_buttons(phone, "While you wait:", MAIN_BUTTONS)
 
     # Notify admin about the payment
-    if ADMIN_NOTIFICATION_NUMBER:
-        admin_msg = (
-            f"💰 *Payment Received*\n\n"
-            f"From: {phone}\n"
-            f"Amount: RWF {amount:,}\n"
-            f"Type: {type_desc}\n"
-            f"ID: {payment_id}\n"
-            f"⏳ Awaiting confirmation\n\n"
-            f"To confirm: admin [secret] confirm {payment_id}"
+    notify_admin(
+        f"💰 *Payment Received*\n\n"
+        f"From: {phone}\n"
+        f"Amount: RWF {amount:,}\n"
+        f"Type: {type_desc}\n"
+        f"ID: {payment_id}\n"
+        f"⏳ Awaiting confirmation\n\n"
+        f"To confirm: admin [secret] confirm {payment_id}"
+    )
+
+
+# ── Organization / Team management ────────────────────────────────────────
+
+def handle_org(phone: str, text: str, sub: dict):
+    """Handle ORG commands for Business tier team management."""
+    tier = sub.get("subscription_tier", "free")
+    text_lower = text.lower().strip()
+
+    # Check if user is an org member (not owner)
+    owner = get_org_owner(phone)
+    if owner and text_lower == "org":
+        owner_sub = get_subscriber(owner)
+        owner_name = owner_sub.get("company_name", owner) if owner_sub else owner
+        send_text(phone, f"👥 *You're a member of {owner_name}'s organisation.*\n\nYou have Pro-level access via their Business plan.")
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        return
+
+    # Only Business tier can manage org
+    if tier != "business":
+        send_text(
+            phone,
+            "👥 *Team management requires a Business plan.*\n\n"
+            "💎 *Business — RWF 180,000/month*\n"
+            "  Add up to 3 team members who share your Pro-level access.\n\n"
+            "Reply *BUY CREDITS* to upgrade."
         )
-        send_text(ADMIN_NOTIFICATION_NUMBER, admin_msg)
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        return
+
+    parts = text.split()
+
+    # ORG (no args) — show status
+    if len(parts) == 1:
+        members = get_org_members(phone)
+        if not members:
+            send_text(
+                phone,
+                "👥 *Your Organisation*\n\n"
+                f"Members: 0/3\n\n"
+                "Add team members to share your Pro-level access:\n"
+                "*ORG ADD 250788123456*"
+            )
+        else:
+            lines = [f"👥 *Your Organisation*\n\nMembers: {len(members)}/3\n"]
+            for m in members:
+                name = m.get("company_name") or "No name"
+                lines.append(f"  • {m['member_phone']} ({name})")
+            lines.append(f"\n*ORG ADD [phone]* — Add member\n*ORG REMOVE [phone]* — Remove member")
+            send_text(phone, "\n".join(lines))
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        return
+
+    cmd = parts[1].lower() if len(parts) > 1 else ""
+    target = parts[2] if len(parts) > 2 else ""
+
+    if cmd == "add" and target:
+        # Validate phone format
+        if not target.isdigit() or len(target) < 9:
+            send_text(phone, "Please provide a valid phone number.\n\nExample: *ORG ADD 250788123456*")
+            send_buttons(phone, "What's next?", MAIN_BUTTONS)
+            return
+
+        if target == phone:
+            send_text(phone, "You can't add yourself as a member!")
+            send_buttons(phone, "What's next?", MAIN_BUTTONS)
+            return
+
+        success = add_org_member(phone, target)
+        if success:
+            send_text(phone, f"✅ *{target}* added to your organisation.\n\nThey now have Pro-level access using your Business plan.")
+            # Notify the new member if they're a subscriber
+            member_sub = get_subscriber(target)
+            if member_sub:
+                send_text(target, f"👥 You've been added to *{sub.get('company_name', phone)}*'s organisation.\n\nYou now have Pro-level access! Reply *HELP* to see what you can do.")
+            count = count_org_members(phone)
+            send_text(phone, f"Team: {count}/3 members")
+        else:
+            count = count_org_members(phone)
+            if count >= 3:
+                send_text(phone, f"❌ Your organisation already has 3 members (maximum).\n\nRemove a member first: *ORG REMOVE [phone]*")
+            else:
+                send_text(phone, "❌ Could not add member. They may already be in your organisation.")
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+    elif cmd == "remove" and target:
+        success = remove_org_member(phone, target)
+        if success:
+            send_text(phone, f"✅ *{target}* removed from your organisation.")
+            # Notify the removed member
+            send_text(target, "You've been removed from the organisation. Your access has been reverted to your personal plan.")
+        else:
+            send_text(phone, f"❌ {target} is not in your organisation.")
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+
+    else:
+        send_text(phone, "Usage:\n  *ORG* — View team\n  *ORG ADD [phone]* — Add member\n  *ORG REMOVE [phone]* — Remove member")
+        send_buttons(phone, "What's next?", MAIN_BUTTONS)
 
 
 # ── Admin commands ───────────────────────────────────────────────────────
@@ -1134,21 +1300,31 @@ def process_webhook_entry(entry: dict):
     step = sub["onboarding_step"] if sub else None
     tier = sub.get("subscription_tier", "free") if sub else "free"
 
+    # Resolve effective tier (org members inherit owner's tier)
+    effective_tier = resolve_effective_tier(phone, sub) if sub else "free"
+
     # ── Onboarding gate ──
     if sub is None or step in ("awaiting_name", "awaiting_sector", "awaiting_name_update"):
         handle_onboarding(phone, msg_type, content, sub)
         return
 
-    # ── Free tier daily message limit (3/day) ──
+    # ── Detect if this is a "free command" (exempt from daily limit) ──
+    is_free_cmd = False
+    if msg_type == "text":
+        is_free_cmd = content.lower().strip() in FREE_COMMANDS_TEXT
+    elif msg_type == "button_reply":
+        is_free_cmd = content.lower().strip() in FREE_BUTTONS
+
+    # ── Free tier daily message limit (3/day) — skip for free commands ──
     FREE_DAILY_LIMIT = 3
-    if tier == "free":
+    if effective_tier == "free" and not is_free_cmd:
         used_today = count_messages_today(phone)
         if used_today > FREE_DAILY_LIMIT:
             send_text(
                 phone,
                 "🔒 *You've used your 3 free messages for today.*\n\n"
                 "Upgrade to *Regular (RWF 3,000/week)* for unlimited messaging + full tender details.\n\n"
-                "Reply *BUY CREDITS* tomorrow or upgrade now."
+                "Type *BUY CREDITS* to upgrade (this command is always free)."
             )
             return
 
@@ -1173,8 +1349,8 @@ def process_webhook_entry(entry: dict):
     elif msg_type == "text" and content:
         handle_text(phone, content, sub)
 
-    # ── Free tier: show remaining messages after every interaction ──
-    if tier == "free":
+    # ── Free tier: show remaining messages (only for counted commands) ──
+    if effective_tier == "free" and not is_free_cmd:
         used_today = count_messages_today(phone)
         remaining = max(0, FREE_DAILY_LIMIT - used_today)
-        send_text(phone, f"_💬 {remaining} free message(s) left today — reply *BUY CREDITS* to upgrade_")
+        send_text(phone, f"_💬 {remaining} free message(s) left today — type *BUY CREDITS* to upgrade_")

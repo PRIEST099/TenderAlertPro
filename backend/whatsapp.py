@@ -147,6 +147,26 @@ def send_template(phone: str, template_name: str, lang: str = "en_US", component
         return False
 
 
+def notify_admin(message: str) -> bool:
+    """
+    Send a notification to the admin. Tries send_text first (works if admin
+    has messaged the bot within 24h), falls back to hello_world template.
+    """
+    from config import ADMIN_NOTIFICATION_NUMBER
+    if not ADMIN_NOTIFICATION_NUMBER:
+        print("[whatsapp] No ADMIN_NOTIFICATION_NUMBER configured — skipping notification")
+        return False
+
+    # Try free-form text first (works within 24h session)
+    success = send_text(ADMIN_NOTIFICATION_NUMBER, message)
+    if success:
+        return True
+
+    # Fallback: send hello_world template (always works, already approved)
+    print("[whatsapp] send_text to admin failed (no session?), falling back to hello_world template")
+    return send_template(ADMIN_NOTIFICATION_NUMBER, "hello_world")
+
+
 def format_tender_alert(tenders: list[dict], subscriber_name: str = None) -> str:
     """
     Format a list of tender dicts into a clean WhatsApp digest message.
