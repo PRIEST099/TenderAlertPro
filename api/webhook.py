@@ -56,17 +56,27 @@ KNOWN_COMMANDS = {
     "status", "me", "profile", "sectors", "sector",
     "list", "tenders", "latest", "new", "today",
     "name", "change name", "change sector",
+    "refresh", "active", "open",
+    "docs", "pipeline", "credits",
 }
 
 HELP_TEXT = (
-    "*TenderAlert Pro — Commands*\n\n"
-    "📋 *LIST* — See latest tenders in your sector\n"
-    "🔍 *SEARCH <keyword>* — Find specific tenders\n"
-    "👤 *STATUS* — View your subscription info\n"
-    "📂 *SECTORS* — Change your sector filter\n"
-    "✏️ *NAME* — Update your company name\n"
-    "❌ *STOP* — Unsubscribe\n"
-    "❓ *HELP* — Show this menu"
+    "*TenderAlert Pro — Commands* 🇷🇼\n\n"
+    "*📋 Tenders:*\n"
+    "  • *LIST* — Browse active tenders in your sector\n"
+    "  • *REFRESH* — Fetch latest tenders from RPPA\n"
+    "  • *SEARCH <keyword>* — Find specific tenders\n\n"
+    "*👤 Account:*\n"
+    "  • *STATUS* — Your subscription & sector info\n"
+    "  • *SECTORS* — Change your sector filter\n"
+    "  • *NAME* — Update your company name\n"
+    "  • *CREDITS* — Check your credit balance\n\n"
+    "*📁 Pro Features:*\n"
+    "  • *PIPELINE* — View your bid tracker\n"
+    "  • *DOCS* — Your uploaded documents\n\n"
+    "*⚙️ Settings:*\n"
+    "  • *STOP* — Unsubscribe from alerts\n"
+    "  • *HELP* — Show this menu"
 )
 
 # Standard button sets for common responses
@@ -76,7 +86,7 @@ _user_tender_cache: dict[str, list[dict]] = {}
 
 MAIN_BUTTONS = ["View Tenders", "My Status", "Help"]
 AFTER_ACTION_BUTTONS = ["View Tenders", "Change Sector", "Help"]
-AFTER_TENDERS_BUTTONS = ["Change Sector", "My Status", "Help"]
+AFTER_TENDERS_BUTTONS = ["Refresh Latest", "Change Sector", "Help"]
 AFTER_DETAIL_BUTTONS = ["Deep Analyze", "View Tenders", "Help"]
 AFTER_ANALYSIS_BUTTONS = ["Save to Pipeline", "View Tenders", "Help"]
 
@@ -94,6 +104,7 @@ BTN_CHANGE_SECTORS_ALT = "change my sectors"
 BTN_UNSUBSCRIBE_ALT    = "unsubscribe"
 BTN_CONFIRM_UNSUB  = "yes, unsubscribe"
 BTN_KEEP_ALERTS    = "no, keep alerts"
+BTN_REFRESH_LATEST = "refresh latest"
 BTN_GET_STARTED    = "get started"
 BTN_MY_STATUS      = "my status"
 BTN_HELP           = "help"
@@ -245,6 +256,27 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
             send_tender_list(phone, tenders)
         else:
             send_text(phone, "No active tenders in your sector right now. Check back tomorrow morning! ☀️")
+            send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
+
+    # Refresh latest from RPPA
+    elif button_title == BTN_REFRESH_LATEST:
+        send_text(phone, "🔄 _Fetching latest tenders from RPPA Umucyo..._")
+        try:
+            from poller import poll_and_store
+            new_count = poll_and_store()
+            if new_count > 0:
+                send_text(phone, f"✅ *{new_count} tenders updated.*")
+            else:
+                send_text(phone, "No new tenders since last check.")
+        except Exception as e:
+            print(f"[webhook] Refresh failed: {e}")
+
+        tenders = get_tenders_for_subscriber(phone)
+        if tenders:
+            _user_tender_cache[phone] = tenders[:10]
+            send_tender_list(phone, tenders)
+        else:
+            send_text(phone, "No active tenders in your sector right now.")
             send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
 
     # Change sector
@@ -412,6 +444,28 @@ def handle_text(phone: str, text: str, sub: dict):
             send_tender_list(phone, tenders)
         else:
             send_text(phone, "No active tenders in your sector right now.\n\nTry *SEARCH <keyword>* to find specific tenders.")
+            send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
+
+    # ── REFRESH / ACTIVE / OPEN — fetch latest from RPPA then show ──
+    elif text_lower in ("refresh", "active", "open"):
+        send_text(phone, "🔄 _Fetching latest tenders from RPPA Umucyo..._")
+        try:
+            from poller import poll_and_store
+            new_count = poll_and_store()
+            if new_count > 0:
+                send_text(phone, f"✅ *{new_count} tenders updated* from RPPA.\n\nHere are the active ones for your sector:")
+            else:
+                send_text(phone, "No new tenders since last check. Here are the current active ones:")
+        except Exception as e:
+            print(f"[webhook] Refresh failed: {e}")
+            send_text(phone, "Couldn't reach RPPA right now. Showing cached tenders:")
+
+        tenders = get_tenders_for_subscriber(phone)
+        if tenders:
+            _user_tender_cache[phone] = tenders[:10]
+            send_tender_list(phone, tenders)
+        else:
+            send_text(phone, "No active tenders in your sector right now. Try changing your sector or search for specific keywords.")
             send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
 
     # ── SEARCH <keyword> ──

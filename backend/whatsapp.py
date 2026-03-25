@@ -391,16 +391,45 @@ def format_tender_detail(tender: dict) -> str:
     title = tender.get("title", "Untitled")
     buyer = tender.get("buyer_name", "Unknown")
     category = tender.get("category", "Other")
+    sub_category = tender.get("sub_category", "")
     value_str = f"RWF {tender['value_amount']:,.0f}" if tender.get("value_amount") else "Value not disclosed"
     deadline = (tender.get("deadline") or "")[:10] or "Not specified"
     ocid = tender.get("ocid", "")
+    status = tender.get("status", "unknown")
+
+    # Deadline urgency
+    deadline_note = ""
+    if deadline != "Not specified":
+        try:
+            from datetime import datetime, timezone
+            dl = datetime.fromisoformat(tender["deadline"].replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            days_left = (dl - now).days
+            if days_left < 0:
+                deadline_note = " ⛔ *EXPIRED*"
+            elif days_left == 0:
+                deadline_note = " 🔴 *CLOSES TODAY*"
+            elif days_left <= 3:
+                deadline_note = f" 🔴 *{days_left}d left*"
+            elif days_left <= 7:
+                deadline_note = f" 🟡 *{days_left}d left*"
+            else:
+                deadline_note = f" 🟢 *{days_left}d left*"
+        except Exception:
+            pass
+
+    # Category display
+    cat_display = category
+    if sub_category and sub_category != category and sub_category != "Other":
+        cat_display = f"{category} → {sub_category}"
 
     lines = [
         f"📋 *{title}*\n",
         f"🏢 *Buyer:* {buyer}",
-        f"📂 *Category:* {category}",
+        f"📂 *Category:* {cat_display}",
         f"💰 *Value:* {value_str}",
-        f"⏰ *Deadline:* {deadline}",
+        f"⏰ *Deadline:* {deadline}{deadline_note}",
+        f"📊 *Status:* {status.title()}",
     ]
 
     # AI enrichment (the main value)
@@ -413,8 +442,8 @@ def format_tender_detail(tender: dict) -> str:
     # Reference number for searching on Umucyo
     if ocid:
         ref = ocid.replace("ocds-ozzobm-", "")
-        lines.append(f"\n📎 *Reference:* {ref}")
-        lines.append(f"🔗 Search this tender on the official portal:\nhttps://umucyo.gov.rw")
+        lines.append(f"\n📎 *Ref:* {ref}")
+        lines.append(f"🔗 View on Umucyo: https://umucyo.gov.rw")
 
     return "\n".join(lines)
 
@@ -435,25 +464,43 @@ def send_welcome(phone: str) -> bool:
 def format_status_message(sub: dict) -> str:
     """Format a subscriber's profile info for the STATUS command."""
     sector_labels = {
-        "ict": "ICT & Technology", "construction": "Works & Construction",
-        "health": "Health & Pharma", "education": "Education",
-        "consulting": "Consulting & Services", "supply": "Supply & Goods",
-        "all": "All Sectors",
+        "ict": "ICT & Technology", "construction": "Construction & Infrastructure",
+        "health": "Health & Medical", "education": "Education & Training",
+        "consulting": "Consulting & Advisory", "supply": "Supply & Equipment",
+        "agriculture": "Agriculture & Livestock", "energy": "Energy & Utilities",
+        "other": "Other / Uncategorized", "all": "All Sectors",
     }
     sector = sector_labels.get(sub.get("sectors", "all"), sub.get("sectors", "all"))
     company = sub.get("company_name") or "Not set"
     joined = (sub.get("created_at") or "")[:10] or "Unknown"
     status = "Active" if sub.get("active") else "Inactive"
+    tier = (sub.get("subscription_tier") or "free").title()
+    credits = sub.get("credits", 0)
+    analyses = sub.get("deep_analyses_used", 0)
 
-    return (
-        f"*Your TenderAlert Pro Subscription*\n\n"
-        f"🏢 Company: *{company}*\n"
-        f"📂 Sector: *{sector}*\n"
-        f"📅 Joined: {joined}\n"
-        f"{'✅' if sub.get('active') else '❌'} Status: {status}\n\n"
-        f"Reply *SECTORS* to change sector\n"
-        f"Reply *NAME* to update company name"
+    tier_icon = "👑" if tier.lower() == "pro" else "💎" if tier.lower() == "business" else "🆓"
+
+    lines = [
+        f"*Your TenderAlert Pro Profile* 🇷🇼\n",
+        f"🏢 Company: *{company}*",
+        f"📂 Sector: *{sector}*",
+        f"📅 Joined: {joined}",
+        f"{'✅' if sub.get('active') else '❌'} Status: *{status}*",
+        f"\n{tier_icon} Plan: *{tier}*",
+        f"🔍 Deep analyses used: *{analyses}*",
+    ]
+
+    if credits > 0:
+        lines.append(f"💳 Proposal credits: *{credits}*")
+
+    lines.append(
+        f"\n_Tap a button below or type:_\n"
+        f"*SECTORS* — change sector\n"
+        f"*NAME* — update company name\n"
+        f"*CREDITS* — view balance"
     )
+
+    return "\n".join(lines)
 
 
 def format_deep_analysis(analysis: dict, tender: dict) -> list[str]:

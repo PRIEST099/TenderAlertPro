@@ -318,23 +318,41 @@ def search_tenders(keyword: str, limit: int = 3) -> list:
 
 
 def get_tenders_for_subscriber(phone: str, since_hours: int = 0, limit: int = 10) -> list:
-    """Get active tenders filtered by the subscriber's sector preference."""
+    """Get active tenders filtered by the subscriber's sector preference.
+    Matches against category, sub_category, and tags for fine-grained filtering."""
     sub = get_subscriber(phone)
     if not sub:
         return []
 
-    tenders = get_new_tenders(since_hours=since_hours, limit=limit)
+    tenders = get_new_tenders(since_hours=since_hours, limit=limit * 3)  # fetch more to filter
     sectors = sub.get("sectors", "all")
 
     if sectors == "all":
-        return tenders
+        return tenders[:limit]
 
     sector = sectors.lower()
-    return [
-        t for t in tenders
-        if sector in (t.get("category") or "").lower()
-        or sector in (t.get("tags") or "").lower()
-    ]
+    matched = []
+    for t in tenders:
+        cat = (t.get("category") or "").lower()
+        sub_cat = (t.get("sub_category") or "").lower()
+        tags = (t.get("tags") or "").lower()
+
+        if (sector in cat or sector in sub_cat or sector in tags
+            or (sector == "ict" and ("technology" in sub_cat or "ict" in sub_cat))
+            or (sector == "construction" and ("infrastructure" in sub_cat or "construction" in sub_cat or "works" in cat))
+            or (sector == "health" and ("medical" in sub_cat or "health" in sub_cat))
+            or (sector == "consulting" and ("advisory" in sub_cat or "consulting" in sub_cat or "services" in cat))
+            or (sector == "supply" and ("equipment" in sub_cat or "supply" in sub_cat or "goods" in cat))
+            or (sector == "education" and ("training" in sub_cat or "education" in sub_cat))
+            or (sector == "agriculture" and ("livestock" in sub_cat or "agriculture" in sub_cat))
+            or (sector == "energy" and ("utilities" in sub_cat or "energy" in sub_cat))
+            or (sector == "other" and (sub_cat in ("", "other")))
+        ):
+            matched.append(t)
+            if len(matched) >= limit:
+                break
+
+    return matched
 
 
 # ── Interaction Logging ────────────────────────────────────────────────────
