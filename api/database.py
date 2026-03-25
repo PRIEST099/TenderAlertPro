@@ -181,7 +181,10 @@ def get_tenders_paginated(
         f"""SELECT ocid, title, buyer_name, category, value_amount, value_currency,
                    deadline, status, ai_summary, fetched_at
             FROM tenders WHERE {where_sql}
-            ORDER BY fetched_at DESC LIMIT ? OFFSET ?""",
+            ORDER BY
+                CASE WHEN status = 'active' AND deadline > datetime('now') THEN 0 ELSE 1 END,
+                deadline ASC
+            LIMIT ? OFFSET ?""",
         params + [per_page, offset],
     )
     rows = [dict(r) for r in c.fetchall()]
