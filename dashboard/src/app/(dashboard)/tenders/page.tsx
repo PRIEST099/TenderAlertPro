@@ -67,13 +67,15 @@ export default function TendersPage() {
   const [valueMin, setValueMin] = useState("");
   const [valueMax, setValueMax] = useState("");
 
-  const params = new URLSearchParams({ page: String(page), per_page: "20" });
+  const [perPage, setPerPage] = useState(20);
+
+  const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
   if (sectorFilter) params.set("sector", sectorFilter);
   if (enrichmentFilter) params.set("enrichment", enrichmentFilter);
   if (statusFilter === "open") {
-    params.set("deadline_from", new Date().toISOString().slice(0, 10));
+    params.set("deadline_from", new Date().toISOString());
   } else if (statusFilter === "expired") {
-    params.set("deadline_to", new Date().toISOString().slice(0, 10));
+    params.set("deadline_to", new Date().toISOString());
   }
   if (searchQuery) params.set("search", searchQuery);
   if (valueMin) params.set("value_min", valueMin);
@@ -254,19 +256,67 @@ export default function TendersPage() {
         </CardContent>
       </Card>
 
-      {data && data.pages > 1 && (
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-slate-500">
-            Page {data.page} of {data.pages} ({data.total} tenders)
-          </p>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <Button variant="outline" size="sm" disabled={page >= data.pages} onClick={() => setPage(page + 1)}>
-              <ChevronRight className="h-4 w-4" />
-            </Button>
+      {data && data.total > 0 && (
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div className="flex items-center gap-4">
+            <p className="text-sm text-slate-500">
+              Showing {(page - 1) * perPage + 1}–{Math.min(page * perPage, data.total)} of {data.total} tenders
+            </p>
+            <select
+              value={perPage}
+              onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }}
+              className="border rounded-md px-2 py-1 text-sm bg-white"
+            >
+              <option value={10}>10 per page</option>
+              <option value={20}>20 per page</option>
+              <option value={50}>50 per page</option>
+              <option value={100}>100 per page</option>
+            </select>
           </div>
+
+          {data.pages > 1 && (
+            <div className="flex items-center gap-1">
+              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(1)}>
+                First
+              </Button>
+              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+
+              {/* Page numbers */}
+              {Array.from({ length: data.pages }, (_, i) => i + 1)
+                .filter(p => p === 1 || p === data.pages || Math.abs(p - page) <= 2)
+                .reduce<(number | string)[]>((acc, p, i, arr) => {
+                  if (i > 0 && typeof arr[i - 1] === "number" && (p as number) - (arr[i - 1] as number) > 1) {
+                    acc.push("...");
+                  }
+                  acc.push(p);
+                  return acc;
+                }, [])
+                .map((p, i) =>
+                  typeof p === "string" ? (
+                    <span key={`dots-${i}`} className="px-2 text-slate-400">...</span>
+                  ) : (
+                    <Button
+                      key={p}
+                      variant={p === page ? "default" : "outline"}
+                      size="sm"
+                      className="min-w-[36px]"
+                      onClick={() => setPage(p as number)}
+                    >
+                      {p}
+                    </Button>
+                  )
+                )}
+
+              <Button variant="outline" size="sm" disabled={page >= data.pages} onClick={() => setPage(page + 1)}>
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              <Button variant="outline" size="sm" disabled={page >= data.pages} onClick={() => setPage(data.pages)}>
+                Last
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>
