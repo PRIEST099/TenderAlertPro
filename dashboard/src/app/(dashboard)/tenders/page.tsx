@@ -16,6 +16,7 @@ interface Tender {
   title: string;
   buyer_name: string;
   category: string;
+  sub_category: string | null;
   value_amount: number | null;
   value_currency: string;
   deadline: string | null;
@@ -141,10 +142,17 @@ export default function TendersPage() {
           className="border rounded-lg px-3 py-2 text-sm bg-white"
         >
           <option value="">All sectors</option>
-          <option value="ict">ICT</option>
-          <option value="construction">Construction / Works</option>
-          <option value="services">Services / Consulting</option>
-          <option value="goods">Goods / Supply</option>
+          <option value="ict">ICT & Technology</option>
+          <option value="construction">Construction & Infrastructure</option>
+          <option value="health">Health & Medical</option>
+          <option value="education">Education & Training</option>
+          <option value="consulting">Consulting & Advisory</option>
+          <option value="supply">Supply & Equipment</option>
+          <option value="agriculture">Agriculture & Livestock</option>
+          <option value="energy">Energy & Utilities</option>
+          <option value="services">Services (Broad)</option>
+          <option value="goods">Goods (Broad)</option>
+          <option value="other">Other / Uncategorized</option>
         </select>
 
         <select
@@ -233,7 +241,12 @@ export default function TendersPage() {
                       </td>
                       <td className="px-4 py-3 text-slate-500 max-w-[200px] truncate">{tender.buyer_name}</td>
                       <td className="px-4 py-3">
-                        <Badge variant="outline">{tender.category}</Badge>
+                        <div className="flex flex-col gap-1">
+                          <Badge variant="outline">{tender.category}</Badge>
+                          {tender.sub_category && tender.sub_category !== tender.category && (
+                            <Badge variant="secondary" className="text-xs">{tender.sub_category}</Badge>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-slate-700 whitespace-nowrap">
                         {formatCurrency(tender.value_amount, tender.value_currency)}

@@ -55,6 +55,14 @@ def normalize_release(release: dict) -> dict | None:
     deadline = period.get("endDate", "")
 
     source_url = "https://umucyo.gov.rw"
+    published_at = release.get("date", "")  # OCDS release.date = when published/updated
+
+    # Extract item classifications for better categorization
+    items_desc = []
+    for item in tender.get("items", []):
+        cl = item.get("classification", {})
+        if cl.get("description"):
+            items_desc.append(cl["description"])
 
     return {
         "ocid": ocid,
@@ -67,6 +75,8 @@ def normalize_release(release: dict) -> dict | None:
         "value_currency": value_currency,
         "deadline": deadline,
         "source_url": source_url,
+        "published_at": published_at,
+        "items_description": ", ".join(items_desc[:5]),  # for categorizer context
         "raw_json": json.dumps(release),
         "fetched_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
     }
@@ -212,6 +222,16 @@ def poll_and_store(limit: int = None) -> int:
             pass
 
     print(f"[poller] Done. {len(tenders)} tenders processed, {new_count} new/updated, {awards_count} awards extracted.")
+
+    # Categorize new tenders after polling
+    try:
+        from categorizer import categorize_new_tenders
+        cat_count = categorize_new_tenders(batch_size=20)
+        if cat_count:
+            print(f"[poller] {cat_count} tenders categorized.")
+    except Exception as e:
+        print(f"[poller] Categorization skipped: {e}")
+
     return new_count
 
 

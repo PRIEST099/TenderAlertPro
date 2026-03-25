@@ -247,17 +247,25 @@ def send_sector_list(phone: str) -> bool:
                 "button": "Choose Sector",
                 "sections": [
                     {
-                        "title": "Available Sectors",
+                        "title": "Popular Sectors",
                         "rows": [
-                            {"id": "ict",          "title": "ICT & Technology"},
-                            {"id": "construction", "title": "Works & Construction"},
-                            {"id": "health",       "title": "Health & Pharma"},
-                            {"id": "education",    "title": "Education"},
-                            {"id": "consulting",   "title": "Consulting & Services"},
-                            {"id": "supply",       "title": "Supply & Goods"},
-                            {"id": "all",          "title": "All Sectors"},
+                            {"id": "all",            "title": "All Sectors", "description": "Get alerts for everything"},
+                            {"id": "ict",            "title": "ICT & Technology"},
+                            {"id": "construction",   "title": "Construction", "description": "Infrastructure & works"},
+                            {"id": "health",         "title": "Health & Medical"},
+                            {"id": "consulting",     "title": "Consulting & Advisory"},
                         ],
-                    }
+                    },
+                    {
+                        "title": "More Sectors",
+                        "rows": [
+                            {"id": "supply",         "title": "Supply & Equipment"},
+                            {"id": "education",      "title": "Education & Training"},
+                            {"id": "agriculture",    "title": "Agriculture"},
+                            {"id": "energy",         "title": "Energy & Utilities"},
+                            {"id": "other",          "title": "Other / Uncategorized", "description": "Unique tenders outside standard sectors"},
+                        ],
+                    },
                 ],
             },
         },

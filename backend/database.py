@@ -176,6 +176,8 @@ def init_db():
         ("subscribers", "rate_limit_exempt",   "INTEGER DEFAULT 0"),
         ("tenders",     "tags",                "TEXT DEFAULT ''"),
         ("tenders",     "deep_analysis",       "TEXT DEFAULT ''"),
+        ("tenders",     "published_at",        "TEXT DEFAULT ''"),
+        ("tenders",     "sub_category",        "TEXT DEFAULT ''"),
     ]
     for table, col, definition in migrations:
         try:
@@ -188,16 +190,23 @@ def init_db():
 
 
 def upsert_tender(tender: dict):
+    # Remove items_description before insert (not a DB column, used for categorizer)
+    tender = dict(tender)
+    tender.pop("items_description", None)
+
     conn = get_conn()
     c = conn.cursor()
     c.execute("""
         INSERT INTO tenders (ocid, title, description, buyer_name, category, status,
-                             value_amount, value_currency, deadline, source_url, raw_json, fetched_at)
+                             value_amount, value_currency, deadline, source_url, raw_json,
+                             published_at, fetched_at)
         VALUES (:ocid, :title, :description, :buyer_name, :category, :status,
-                :value_amount, :value_currency, :deadline, :source_url, :raw_json, :fetched_at)
+                :value_amount, :value_currency, :deadline, :source_url, :raw_json,
+                :published_at, :fetched_at)
         ON CONFLICT(ocid) DO UPDATE SET
             status = excluded.status,
             deadline = excluded.deadline,
+            published_at = COALESCE(excluded.published_at, tenders.published_at),
             fetched_at = excluded.fetched_at
     """, tender)
     inserted = c.rowcount

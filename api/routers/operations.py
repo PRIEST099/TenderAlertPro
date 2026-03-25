@@ -54,6 +54,19 @@ async def manual_enrich(
         return OperationResult(success=False, message=f"Enrichment failed: {str(e)}", count=0)
 
 
+@router.post("/categorize", response_model=OperationResult)
+async def manual_categorize(
+    _admin: str = Depends(get_current_admin),
+):
+    """Manually trigger AI categorization on uncategorized tenders."""
+    from categorizer import categorize_new_tenders  # noqa: E402
+    try:
+        count = categorize_new_tenders(batch_size=20)
+        return OperationResult(success=True, message=f"Categorized {count} tender(s)", count=count)
+    except Exception as e:
+        return OperationResult(success=False, message=f"Categorization failed: {str(e)}", count=0)
+
+
 @router.get("/status", response_model=OperationStatus)
 async def get_status(_admin: str = Depends(get_current_admin)):
     subs = count_subscribers()

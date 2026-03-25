@@ -34,15 +34,18 @@ from whatsapp import (  # noqa: E402
     format_deep_analysis, format_pipeline, format_documents_checklist,
 )
 
-VALID_SECTORS = ["ict", "construction", "health", "education", "agriculture", "consulting", "supply", "all"]
+VALID_SECTORS = ["ict", "construction", "health", "education", "agriculture", "consulting", "supply", "energy", "other", "all"]
 
 SECTOR_LABELS = {
     "ict": "ICT & Technology",
-    "construction": "Works & Construction",
-    "health": "Health & Pharma",
-    "education": "Education",
-    "consulting": "Consulting & Services",
-    "supply": "Supply & Goods",
+    "construction": "Construction & Infrastructure",
+    "health": "Health & Medical",
+    "education": "Education & Training",
+    "consulting": "Consulting & Advisory",
+    "supply": "Supply & Equipment",
+    "agriculture": "Agriculture & Livestock",
+    "energy": "Energy & Utilities",
+    "other": "Other / Uncategorized",
     "all": "All Sectors",
 }
 

@@ -34,6 +34,7 @@ async def list_tenders(
             title=r["title"],
             buyer_name=r.get("buyer_name", ""),
             category=r.get("category", ""),
+            sub_category=r.get("sub_category", ""),
             value_amount=r.get("value_amount"),
             value_currency=r.get("value_currency", "RWF"),
             deadline=r.get("deadline"),

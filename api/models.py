@@ -87,6 +87,7 @@ class TenderOut(BaseModel):
     title: str
     buyer_name: str
     category: str
+    sub_category: Optional[str] = None
     value_amount: Optional[float] = None
     value_currency: str = "RWF"
     deadline: Optional[str] = None

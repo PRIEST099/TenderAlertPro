@@ -159,7 +159,8 @@ def get_tenders_paginated(
     params = []
 
     if sector and sector != "all":
-        where_clauses.append("LOWER(category) LIKE ?")
+        where_clauses.append("(LOWER(category) LIKE ? OR LOWER(sub_category) LIKE ?)")
+        params.append(f"%{sector.lower()}%")
         params.append(f"%{sector.lower()}%")
 
     if enrichment == "enriched":
@@ -193,7 +194,7 @@ def get_tenders_paginated(
 
     offset = (page - 1) * per_page
     c.execute(
-        f"""SELECT ocid, title, buyer_name, category, value_amount, value_currency,
+        f"""SELECT ocid, title, buyer_name, category, sub_category, value_amount, value_currency,
                    deadline, status, ai_summary, fetched_at
             FROM tenders WHERE {where_sql}
             ORDER BY
