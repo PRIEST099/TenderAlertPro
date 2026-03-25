@@ -23,7 +23,13 @@ ADMIN_WHATSAPP_NUMBER = os.getenv("ADMIN_WHATSAPP_NUMBER", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Database — defaults to Railway volume path; local .env overrides for dev
-DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/tenderalert.db")
+_raw_db_path = os.getenv("DATABASE_PATH", "/data/tenderalert.db")
+# Resolve relative paths against the project root (parent of backend/)
+if not os.path.isabs(_raw_db_path):
+    _project_root = Path(__file__).resolve().parent.parent
+    DATABASE_PATH = str(_project_root / _raw_db_path)
+else:
+    DATABASE_PATH = _raw_db_path
 
 # App
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
