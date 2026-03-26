@@ -147,10 +147,13 @@ def send_template(phone: str, template_name: str, lang: str = "en_US", component
         return False
 
 
-def notify_admin(message: str) -> bool:
+def notify_admin(message: str, amount: str = None, phone_from: str = None,
+                  pay_type: str = None, ref: str = None) -> bool:
     """
-    Send a notification to the admin. Tries send_text first (works if admin
-    has messaged the bot within 24h), falls back to hello_world template.
+    Send a notification to the admin. Three-level fallback:
+    1. send_text (works if admin messaged bot within 24h)
+    2. payment_alert template with structured params (works anytime, carries data)
+    3. hello_world template (last resort, no data but admin knows to check dashboard)
     """
     from config import ADMIN_NOTIFICATION_NUMBER
     if not ADMIN_NOTIFICATION_NUMBER:
@@ -162,8 +165,24 @@ def notify_admin(message: str) -> bool:
     if success:
         return True
 
-    # Fallback: send hello_world template (always works, already approved)
-    print("[whatsapp] send_text to admin failed (no session?), falling back to hello_world template")
+    # Fallback 1: payment_alert template with structured data
+    if amount and phone_from:
+        print("[whatsapp] send_text to admin failed (no session), trying payment_alert template")
+        components = [{
+            "type": "body",
+            "parameters": [
+                {"type": "text", "text": str(amount)},
+                {"type": "text", "text": str(phone_from)},
+                {"type": "text", "text": str(pay_type or "payment")},
+                {"type": "text", "text": str(ref or "N/A")},
+            ]
+        }]
+        result = send_template(ADMIN_NOTIFICATION_NUMBER, "payment_alert", components=components)
+        if result:
+            return True
+
+    # Fallback 2: hello_world template (last resort — admin checks dashboard)
+    print("[whatsapp] Falling back to hello_world template for admin notification")
     return send_template(ADMIN_NOTIFICATION_NUMBER, "hello_world")
 
 

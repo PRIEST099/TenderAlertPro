@@ -11,6 +11,7 @@ Pure Python — no framework dependency. Called by api/routers/webhook.py.
 """
 
 import sys
+import concurrent.futures
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
@@ -38,8 +39,24 @@ from whatsapp import (  # noqa: E402
     format_deep_analysis, format_pipeline, format_documents_checklist,
     notify_admin,
 )
+from poller import poll_and_store  # noqa: E402
 
-VALID_SECTORS = ["ict", "construction", "health", "education", "agriculture", "consulting", "supply", "energy", "other", "all"]
+
+def _poll_with_timeout(timeout_seconds: int = 15) -> int:
+    """Run poll_and_store with a timeout to avoid blocking the webhook on Railway."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(poll_and_store)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            print("[webhook] poll_and_store timed out")
+            return -1  # sentinel = timed out
+        except Exception as e:
+            print(f"[webhook] poll_and_store error: {e}")
+            return -2  # sentinel = error
+
+
+VALID_SECTORS =["ict", "construction", "health", "education", "agriculture", "consulting", "supply", "energy", "other", "all"]
 
 SECTOR_LABELS = {
     "ict": "ICT & Technology",
@@ -349,22 +366,22 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
     # Refresh latest from RPPA
     elif button_title == BTN_REFRESH_LATEST:
         send_text(phone, "🔄 _Fetching latest tenders from RPPA Umucyo..._")
-        try:
-            from poller import poll_and_store
-            new_count = poll_and_store()
-            if new_count > 0:
-                send_text(phone, f"✅ *{new_count} tenders updated.*")
-            else:
-                send_text(phone, "No new tenders since last check.")
-        except Exception as e:
-            print(f"[webhook] Refresh failed: {e}")
+        new_count = _poll_with_timeout(timeout_seconds=15)
+        if new_count == -1:
+            send_text(phone, "⏳ RPPA is taking a while. Showing cached tenders:")
+        elif new_count == -2:
+            send_text(phone, "⚠️ Couldn't reach RPPA right now. Showing cached tenders:")
+        elif new_count > 0:
+            send_text(phone, f"✅ *{new_count} tenders updated from RPPA.*")
+        else:
+            send_text(phone, "No new tenders since last check. Here are the current ones:")
 
         tenders = get_tenders_for_subscriber(phone)
         if tenders:
             _user_tender_cache[phone] = tenders[:10]
             send_tender_list(phone, tenders, tier=sub.get("subscription_tier", "free") if sub else "free")
         else:
-            send_text(phone, "No active tenders in your sector right now.")
+            send_text(phone, "No active tenders in your sector right now. Try *SECTORS* to change your filter.")
             send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
 
     # Change sector
@@ -569,23 +586,22 @@ def handle_text(phone: str, text: str, sub: dict):
     # ── REFRESH / ACTIVE / OPEN — fetch latest from RPPA then show ──
     elif text_lower in ("refresh", "active", "open"):
         send_text(phone, "🔄 _Fetching latest tenders from RPPA Umucyo..._")
-        try:
-            from poller import poll_and_store
-            new_count = poll_and_store()
-            if new_count > 0:
-                send_text(phone, f"✅ *{new_count} tenders updated* from RPPA.\n\nHere are the active ones for your sector:")
-            else:
-                send_text(phone, "No new tenders since last check. Here are the current active ones:")
-        except Exception as e:
-            print(f"[webhook] Refresh failed: {e}")
-            send_text(phone, "Couldn't reach RPPA right now. Showing cached tenders:")
+        new_count = _poll_with_timeout(timeout_seconds=15)
+        if new_count == -1:
+            send_text(phone, "⏳ RPPA is taking a while. Showing cached tenders:")
+        elif new_count == -2:
+            send_text(phone, "⚠️ Couldn't reach RPPA right now. Showing cached tenders:")
+        elif new_count > 0:
+            send_text(phone, f"✅ *{new_count} tenders updated from RPPA.*\n\nHere are the active ones for your sector:")
+        else:
+            send_text(phone, "No new tenders since last check. Here are the current active ones:")
 
         tenders = get_tenders_for_subscriber(phone)
         if tenders:
             _user_tender_cache[phone] = tenders[:10]
             send_tender_list(phone, tenders, tier=sub.get("subscription_tier", "free") if sub else "free")
         else:
-            send_text(phone, "No active tenders in your sector right now. Try changing your sector or search for specific keywords.")
+            send_text(phone, "No active tenders in your sector right now. Try *SEARCH <keyword>* or *SECTORS* to change your filter.")
             send_buttons(phone, "What would you like to do?", AFTER_ACTION_BUTTONS)
 
     # ── SEARCH <keyword> ──
@@ -1057,7 +1073,7 @@ def handle_paid_confirmation(phone: str, text: str):
     )
     send_buttons(phone, "While you wait:", MAIN_BUTTONS)
 
-    # Notify admin about the payment
+    # Notify admin about the payment (with structured data for template fallback)
     notify_admin(
         f"💰 *Payment Received*\n\n"
         f"From: {phone}\n"
@@ -1065,7 +1081,11 @@ def handle_paid_confirmation(phone: str, text: str):
         f"Type: {type_desc}\n"
         f"ID: {payment_id}\n"
         f"⏳ Awaiting confirmation\n\n"
-        f"To confirm: admin [secret] confirm {payment_id}"
+        f"To confirm: admin [secret] confirm {payment_id}",
+        amount=f"{amount:,}",
+        phone_from=phone,
+        pay_type=type_desc,
+        ref=payment_id,
     )
 
 
