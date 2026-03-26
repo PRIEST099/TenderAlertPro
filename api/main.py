@@ -12,8 +12,9 @@ import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 # Make backend/ importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
@@ -54,8 +55,19 @@ def start_scheduler():
             id="daily_tender_job",
             replace_existing=True,
         )
+        # Deadline reminders at 09:00 Kigali (07:00 UTC)
+        from scheduler import run_deadline_reminders
+        scheduler.add_job(
+            run_deadline_reminders,
+            "cron",
+            hour=7,
+            minute=0,
+            id="deadline_reminders",
+            replace_existing=True,
+        )
+
         scheduler.start()
-        print(f"[api] Scheduler started — daily job at {DAILY_HOUR_UTC:02d}:{DAILY_MINUTE_UTC:02d} UTC")
+        print(f"[api] Scheduler started — daily job at {DAILY_HOUR_UTC:02d}:{DAILY_MINUTE_UTC:02d} UTC + deadline reminders at 07:00 UTC")
     except Exception as e:
         print(f"[api] Failed to start scheduler: {e}")
 
@@ -125,3 +137,30 @@ async def login(body: LoginRequest):
 @app.get("/health", tags=["health"])
 async def health():
     return {"status": "running", "service": "TenderAlert Pro API"}
+
+
+# ── File serving for proposals/documents (time-limited token) ────────────
+
+@app.get("/api/files/{token}", tags=["files"])
+async def serve_file(token: str):
+    """Serve a file from storage using a time-limited JWT token.
+    Used by WhatsApp to download proposal PDFs."""
+    import jwt
+    from config import FLASK_SECRET_KEY
+
+    try:
+        payload = jwt.decode(token, FLASK_SECRET_KEY, algorithms=["HS256"])
+        file_path = Path(payload["path"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="Link expired")
+    except (jwt.InvalidTokenError, KeyError):
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="application/pdf",
+        filename=payload.get("filename", "document.pdf"),
+    )

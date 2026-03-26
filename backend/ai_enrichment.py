@@ -242,7 +242,26 @@ DEEP_ANALYSIS_SCHEMA = """{
 }"""
 
 
-def build_deep_prompt(tender: dict, buyer_history: list, competition_stats: dict) -> str:
+def _build_user_docs_section(user_documents: list = None) -> str:
+    """Build the user documents section for the deep analysis prompt."""
+    if not user_documents:
+        return "=== USER DOCUMENTS ===\nNo documents uploaded by this user. Mark all required_documents as MISSING."
+
+    doc_lines = ["=== USER DOCUMENTS ON FILE ===",
+                 "The user has uploaded these documents to the system:"]
+    for doc in user_documents:
+        doc_lines.append(f"  - {doc.get('doc_type', 'unknown')}: {doc.get('doc_label', doc.get('filename', 'unnamed'))}")
+
+    doc_lines.append("""
+For each item in required_documents, set status to:
+  - "HAVE" if the user has a matching document above
+  - "MISSING" if the user does NOT have it
+  - "CHECK" if uncertain (e.g. user has "iso" but tender needs a specific ISO standard)
+Match doc types: rdb=RDB registration, rra=RRA tax clearance, rssb=RSSB certificate, vat=VAT certificate, profile=company profile, contract=past contract/reference, cv=personnel CV, iso=ISO certification.""")
+    return "\n".join(doc_lines)
+
+
+def build_deep_prompt(tender: dict, buyer_history: list, competition_stats: dict, user_documents: list = None) -> str:
     """Build comprehensive Claude prompt using full OCDS data + historical intelligence."""
     import json as _json
 
@@ -371,10 +390,12 @@ Budget: {f'{budget_currency} {budget_amount:,.0f}' if budget_amount else 'Not di
 
 === HISTORICAL INTELLIGENCE ===
 {history_text}
-{stats_text}"""
+{stats_text}
+
+{_build_user_docs_section(user_documents)}"""
 
 
-def deep_analyze_tender(tender: dict) -> dict | None:
+def deep_analyze_tender(tender: dict, user_documents: list = None) -> dict | None:
     """
     Perform deep AI analysis on a tender using full OCDS data + historical intelligence.
     Returns structured analysis dict or None on failure.
@@ -403,8 +424,8 @@ def deep_analyze_tender(tender: dict) -> dict | None:
     buyer_history = get_buyer_history(buyer_name, category) if buyer_name else []
     comp_stats = get_competition_stats(buyer_name, category) if buyer_name else {}
 
-    # Build prompt and call Claude Sonnet
-    prompt = build_deep_prompt(tender, buyer_history, comp_stats)
+    # Build prompt and call Claude Sonnet (with user documents for cross-matching)
+    prompt = build_deep_prompt(tender, buyer_history, comp_stats, user_documents=user_documents)
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     try:

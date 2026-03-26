@@ -74,11 +74,64 @@ def load_document_as_base64(file_path: str) -> str | None:
         return None
 
 
-def send_pdf_via_whatsapp(phone: str, file_path: str, filename: str, caption: str) -> bool:
-    """Send a PDF document to a WhatsApp user.
-    Requires a publicly accessible URL — for MVP, we note this limitation.
+def generate_file_token(file_path: str, filename: str, expires_hours: int = 1) -> str:
+    """Generate a time-limited JWT token for serving a file."""
+    import jwt
+    from datetime import datetime, timedelta
+    from config import FLASK_SECRET_KEY
+
+    payload = {
+        "path": file_path,
+        "filename": filename,
+        "exp": datetime.utcnow() + timedelta(hours=expires_hours),
+    }
+    return jwt.encode(payload, FLASK_SECRET_KEY, algorithm="HS256")
+
+
+def send_pdf_via_whatsapp(phone: str, file_path: str, filename: str, caption: str = "") -> bool:
+    """Send a PDF document to a WhatsApp user via a time-limited public URL.
+    Uses the /api/files/{token} endpoint on Railway to serve the file.
     """
-    # TODO: Upload to a public file host (Cloudinary, file.io, etc.)
-    # For now, log and return False — the proposal text is sent separately
-    print(f"[documents] PDF sending not yet implemented. File at: {file_path}")
-    return False
+    railway_url = os.getenv("RAILWAY_PUBLIC_URL", os.getenv("RAILWAY_STATIC_URL", ""))
+    if not railway_url:
+        # Fallback: try to construct from common Railway patterns
+        railway_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+        if railway_url and not railway_url.startswith("http"):
+            railway_url = f"https://{railway_url}"
+
+    if not railway_url:
+        print("[documents] No RAILWAY_PUBLIC_URL set — can't serve PDF. Set this env var.")
+        return False
+
+    # Generate time-limited token
+    token = generate_file_token(file_path, filename, expires_hours=24)
+    public_url = f"{railway_url}/api/files/{token}"
+
+    # Send via WhatsApp document message
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": phone,
+        "type": "document",
+        "document": {
+            "link": public_url,
+            "filename": filename,
+            "caption": caption or f"TenderAlert Pro — {filename}",
+        },
+    }
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        resp = requests.post(WHATSAPP_API_URL, json=payload, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            print(f"[documents] PDF sent to {phone}: {filename}")
+            return True
+        else:
+            err = resp.json().get("error", {})
+            print(f"[documents] PDF send failed: {err.get('code')} — {err.get('message')}")
+            return False
+    except requests.RequestException as e:
+        print(f"[documents] PDF send request failed: {e}")
+        return False

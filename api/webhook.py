@@ -120,11 +120,11 @@ def build_help_text(tier: str) -> str:
     if has_regular:
         lines.append("✅ *Regular — Full tender details*")
         lines.append("  Buyer name, reference, Umucyo link")
-        lines.append("  10 tender views per day\n")
+        lines.append("  Unlimited tender views\n")
     else:
         lines.append(f"🟢 *Regular (RWF 3,000/week):*{lock_r}")
         lines.append("  Full tender details (buyer, ref, link)")
-        lines.append("  10 tender views per day\n")
+        lines.append("  Unlimited tender views\n")
 
     if has_pro:
         lines.append("✅ *Pro — Advanced features*")
@@ -501,15 +501,9 @@ def handle_tender_selection(phone: str, content: str, sub: dict):
     tender = cached[idx]
     tier = sub.get("subscription_tier", "free")
 
-    # Regular tier: 10 detail views/day
-    if tier == "regular":
-        views_today = count_tender_views_today(phone)
-        if views_today >= 10:
-            send_text(phone, REGULAR_VIEW_LIMIT_MESSAGE)
-            send_buttons(phone, "What would you like to do?", MAIN_BUTTONS)
-            return
+    # Regular tier: unlimited views (limit removed — was 10/day)
 
-    # Log the detail view for quota tracking
+    # Log the detail view for tracking
     log_interaction(phone, "outbound", "tender_detail", tender.get("ocid", ""), command="tender_detail")
 
     # Enrich on-the-fly if no AI summary exists
@@ -802,9 +796,12 @@ def handle_deep_analyze(phone: str, sub: dict):
 
     send_text(phone, "🔍 _Performing deep analysis with historical intelligence... this takes 10-15 seconds..._")
 
+    # Load user's uploaded documents for cross-matching
+    user_docs = get_user_documents(phone)
+
     try:
         from ai_enrichment import deep_analyze_tender
-        analysis = deep_analyze_tender(tender)
+        analysis = deep_analyze_tender(tender, user_documents=user_docs)
     except Exception as e:
         print(f"[webhook] Deep analysis error: {e}")
         analysis = None
@@ -1011,7 +1008,7 @@ def handle_buy_credits(phone: str):
         f"💳 *TenderAlert Pro — Plans & Pricing*\n\n"
         f"🟢 *Regular — RWF 3,000/week*\n"
         f"  Full tender info (buyer, ref, link)\n"
-        f"  10 tender views per day\n\n"
+        f"  Unlimited tender views\n\n"
         f"👑 *Pro — RWF 75,000/month*\n"
         f"  Unlimited tender views\n"
         f"  Unlimited deep analyses\n"
