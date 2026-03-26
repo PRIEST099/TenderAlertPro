@@ -88,8 +88,7 @@ FREE_COMMANDS_TEXT = {"help", "status", "me", "profile", "my status", "my profil
                      "buy credits", "buy", "upgrade", "pricing",
                      "sectors", "sector", "change sector", "change sectors",
                      "credits", "stop", "unsubscribe", "quit", "cancel", "org"}
-FREE_BUTTONS = {BTN_HELP, BTN_MY_STATUS, BTN_CHANGE_SECTOR, BTN_CHANGE_SECTORS_ALT,
-                BTN_STOP_ALERTS, BTN_UNSUBSCRIBE_ALT, BTN_CONFIRM_UNSUB, BTN_KEEP_ALERTS}
+# FREE_BUTTONS is defined after button constants below
 
 
 def build_help_text(tier: str) -> str:
@@ -216,6 +215,10 @@ BTN_HELP           = "help"
 BTN_DEEP_ANALYZE   = "deep analyze"
 BTN_SAVE_PIPELINE  = "save to pipeline"
 BTN_GEN_PROPOSAL   = "generate proposal"
+
+# Free buttons that don't count toward daily limit
+FREE_BUTTONS = {BTN_HELP, BTN_MY_STATUS, BTN_CHANGE_SECTOR, BTN_CHANGE_SECTORS_ALT,
+                BTN_STOP_ALERTS, BTN_UNSUBSCRIBE_ALT, BTN_CONFIRM_UNSUB, BTN_KEEP_ALERTS}
 
 
 # ── Payload parsing ───────────────────────────────────────────────────────
