@@ -131,16 +131,45 @@ async def upgrade_subscriber(
     credits = credits_map.get(tier, 0)
     update_subscriber(phone, subscription_tier=tier, credits=credits)
 
-    # Notify the user about the tier change via WhatsApp
+    # Notify the user about the tier change via WhatsApp with personalized message + buttons
     try:
+        from whatsapp import send_buttons
+        company = get_subscriber(phone).get("company_name", "") if get_subscriber(phone) else ""
+        greeting = f"*{company}*, " if company else ""
+
         if tier == "free":
-            send_text(phone, "Your TenderAlert Pro subscription has been changed to *Free* tier.")
+            send_text(phone, f"{greeting}your TenderAlert Pro plan has been changed to *Free*.\n\nYou still get 3 daily messages + morning alerts.")
+            send_buttons(phone, "What's next?", ["View Tenders", "Upgrade Plan", "Help"])
         elif tier == "regular":
-            send_text(phone, "🟢 *Your subscription has been upgraded to Regular!*\n\nYou now have full tender details and 10 views per day.\n\nReply *STATUS* to see your profile.")
+            send_text(phone,
+                f"🟢 {greeting}*your plan has been upgraded to Regular!*\n\n"
+                f"You now have:\n"
+                f"  ✅ Unlimited tender browsing\n"
+                f"  ✅ Full tender details (buyer, ref, link)\n\n"
+                f"Enjoy exploring! 🎉"
+            )
+            send_buttons(phone, "Get started:", ["View Tenders", "My Status", "Help"])
         elif tier == "pro":
-            send_text(phone, "👑 *Your subscription has been upgraded to Pro!*\n\nUnlimited tender views + deep analyses + bid pipeline.\n\nReply *STATUS* to see your profile.")
+            send_text(phone,
+                f"👑 {greeting}*your plan has been upgraded to Pro!*\n\n"
+                f"You now have:\n"
+                f"  ✅ Unlimited views + full details\n"
+                f"  ✅ AI Deep Analysis on any tender\n"
+                f"  ✅ Bid Pipeline tracking\n"
+                f"  ✅ Document management\n\n"
+                f"Welcome to the pro league! 🚀"
+            )
+            send_buttons(phone, "Try it out:", ["View Tenders", "My Documents", "Help"])
         elif tier == "business":
-            send_text(phone, "💎 *Your subscription has been upgraded to Business!*\n\nEverything in Pro + 5 proposal credits/month.\n\nReply *STATUS* to see your profile.")
+            send_text(phone,
+                f"💎 {greeting}*your plan has been upgraded to Business!*\n\n"
+                f"You now have:\n"
+                f"  ✅ Everything in Pro\n"
+                f"  ✅ AI Proposal Generator (5 credits/mo)\n"
+                f"  ✅ Team access — add up to 3 members\n\n"
+                f"Your team is waiting! Type *ORG* to manage members. 🏢"
+            )
+            send_buttons(phone, "Get started:", ["View Tenders", "My Documents", "Help"])
     except Exception as e:
         print(f"[subscribers] Failed to notify user about tier change: {e}")
 

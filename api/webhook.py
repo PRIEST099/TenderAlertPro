@@ -153,11 +153,21 @@ def build_help_text(tier: str) -> str:
 # Cleared when user selects a tender or after timeout (simple dict, not persistent)
 _user_tender_cache: dict[str, list[dict]] = {}
 
+# ── Contextual button sets ────────────────────────────────────────────────
 MAIN_BUTTONS = ["View Tenders", "My Status", "Help"]
 AFTER_ACTION_BUTTONS = ["View Tenders", "Change Sector", "Help"]
 AFTER_TENDERS_BUTTONS = ["Refresh Latest", "Change Sector", "Help"]
-AFTER_DETAIL_BUTTONS = ["Deep Analyze", "View Tenders", "Help"]
+AFTER_DETAIL_FREE = ["Upgrade Plan", "View Tenders", "Help"]
+AFTER_DETAIL_REGULAR = ["Upgrade to Pro", "View Tenders", "Help"]
+AFTER_DETAIL_PRO = ["Deep Analyze", "Save to Pipeline", "View Tenders"]
 AFTER_ANALYSIS_BUTTONS = ["Save to Pipeline", "View Tenders", "Help"]
+AFTER_PIPELINE = ["View Pipeline", "View Tenders", "Help"]
+AFTER_SEARCH = ["View Tenders", "Change Sector", "Help"]
+AFTER_DOCUMENT = ["My Documents", "View Tenders", "Help"]
+AFTER_PAYMENT = ["My Status", "View Tenders", "Help"]
+AFTER_ERROR = ["View Tenders", "My Status", "Help"]
+AFTER_UPGRADE_PROMPT = ["View Tenders", "My Status", "Help"]
+ONBOARDING_COMPLETE = ["View Tenders", "Upgrade Plan", "Help"]
 
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
 
@@ -215,6 +225,11 @@ BTN_HELP           = "help"
 BTN_DEEP_ANALYZE   = "deep analyze"
 BTN_SAVE_PIPELINE  = "save to pipeline"
 BTN_GEN_PROPOSAL   = "generate proposal"
+BTN_UPGRADE_PLAN   = "upgrade plan"
+BTN_UPGRADE_PRO    = "upgrade to pro"
+BTN_MY_DOCS        = "my documents"
+BTN_VIEW_PIPELINE  = "view pipeline"
+BTN_VIEW_MORE      = "view tenders"   # same as BTN_VIEW_TENDERS
 
 # Free buttons that don't count toward daily limit
 FREE_BUTTONS = {BTN_HELP, BTN_MY_STATUS, BTN_CHANGE_SECTOR, BTN_CHANGE_SECTORS_ALT,
@@ -323,15 +338,26 @@ def handle_onboarding(phone: str, msg_type: str, content: str, sub: dict | None)
             return
 
         label = SECTOR_LABELS.get(sector, "All Sectors")
+        company = sub.get("company_name", "")
         update_subscriber(phone, sectors=sector, onboarding_step="complete")
         send_text(
             phone,
-            f"✅ *You're all set!*\n\n"
-            f"Sector: *{label}*\n"
-            f"Alerts: Every morning at *08:00 Kigali time*\n\n"
-            f"What would you like to do first?"
+            f"🎉 *Welcome, {company}!*\n\n"
+            f"You're set up for *{label}* tender alerts.\n"
+            f"Daily alerts arrive at *08:00 Kigali time*.\n\n"
+            f"Here's what you can do:\n\n"
+            f"🆓 *Free Plan (you're here)*\n"
+            f"  • Browse 3 tenders per day\n"
+            f"  • Daily sector alerts\n\n"
+            f"🟢 *Regular — RWF 3,000/week*\n"
+            f"  • Unlimited browsing + full tender details\n\n"
+            f"👑 *Pro — RWF 75,000/month*\n"
+            f"  • AI Deep Analysis + Bid Pipeline\n\n"
+            f"💎 *Business — RWF 180,000/month*\n"
+            f"  • AI Proposals + Team access\n\n"
+            f"Ready to explore? 👇"
         )
-        send_buttons(phone, "Choose an action:", ["View Tenders", "My Status", "Help"])
+        send_buttons(phone, "What's next?", ONBOARDING_COMPLETE)
         return
 
     # ── Awaiting name update (existing user changing name) ──
@@ -409,6 +435,27 @@ def handle_button_reply(phone: str, button_title: str, sub: dict):
             "You've been unsubscribed from TenderAlert Pro.\n\n"
             "Message us anytime to rejoin — we'll be here! 👋"
         )
+        send_buttons(phone, "Changed your mind?", ["Get Started", "Help"])
+
+    # Upgrade Plan / Buy Credits button
+    elif button_title in (BTN_UPGRADE_PLAN, "buy credits"):
+        handle_buy_credits(phone, sub)
+
+    # Upgrade to Pro button
+    elif button_title == BTN_UPGRADE_PRO:
+        handle_buy_credits(phone, sub)
+
+    # My Documents button
+    elif button_title == BTN_MY_DOCS:
+        docs = get_user_documents(phone)
+        send_text(phone, format_documents_checklist(docs))
+        send_buttons(phone, "What's next?", AFTER_DOCUMENT)
+
+    # View Pipeline button
+    elif button_title == BTN_VIEW_PIPELINE:
+        pipeline = get_pipeline(phone)
+        send_text(phone, format_pipeline(pipeline, sub.get("company_name", "")))
+        send_buttons(phone, "What's next?", AFTER_PIPELINE)
 
     # Unsubscribe confirmation: NO
     elif button_title == BTN_KEEP_ALERTS:
@@ -529,13 +576,14 @@ def handle_tender_selection(phone: str, content: str, sub: dict):
     # Store ORIGINAL (ungated) tender for Deep Analyze flow
     _user_current_tender[phone] = tender
 
-    # Show appropriate buttons based on tier
+    # Show tier-appropriate buttons
+    company = sub.get("company_name", "")
     if tier == "free":
-        send_buttons(phone, "Upgrade to unlock full details:", ["View Tenders", "My Status", "Help"])
+        send_buttons(phone, f"Unlock full details, {company}:", AFTER_DETAIL_FREE)
     elif tier == "regular":
-        send_buttons(phone, "Upgrade to Pro for deep analysis:", ["View Tenders", "Change Sector", "Help"])
+        send_buttons(phone, "Want AI analysis on this tender?", AFTER_DETAIL_REGULAR)
     else:
-        send_buttons(phone, "Want deeper intel on this tender?", AFTER_DETAIL_BUTTONS)
+        send_buttons(phone, "What would you like to do with this tender?", AFTER_DETAIL_PRO)
 
     # Clear the list cache (but keep current tender)
     _user_tender_cache.pop(phone, None)
@@ -610,7 +658,7 @@ def handle_text(phone: str, text: str, sub: dict):
         else:
             results = search_tenders(keyword, limit=5)
             send_text(phone, format_search_results(results, keyword))
-            send_buttons(phone, "What's next?", AFTER_TENDERS_BUTTONS)
+            send_buttons(phone, "What's next?", AFTER_SEARCH)
 
     # ── STOP / UNSUBSCRIBE (with confirmation) ──
     elif text_lower in ("stop", "unsubscribe", "quit", "cancel"):
@@ -635,13 +683,13 @@ def handle_text(phone: str, text: str, sub: dict):
     elif text_lower == "docs":
         docs = get_user_documents(phone)
         send_text(phone, format_documents_checklist(docs))
-        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        send_buttons(phone, "What's next?", AFTER_DOCUMENT)
 
     # ── PIPELINE (bid tracker) ──
     elif text_lower == "pipeline":
         items = get_pipeline(phone)
-        send_text(phone, format_pipeline(items))
-        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        send_text(phone, format_pipeline(items, sub.get("company_name", "")))
+        send_buttons(phone, "What's next?", AFTER_PIPELINE)
 
     # ── CREDITS (check balance) ──
     elif text_lower == "credits":
@@ -859,7 +907,8 @@ def handle_incoming_document(phone: str, entry: dict):
         filename = doc.get("filename", "document.pdf")
         caption = (doc.get("caption") or msg.get("text", {}).get("body", "")).strip().lower()
     except (KeyError, IndexError):
-        send_text(phone, "I couldn't process that document. Please try again.")
+        send_text(phone, "⚠️ I couldn't process that document. Please try sending it again as a PDF.")
+        send_buttons(phone, "Need help?", AFTER_DOCUMENT)
         return
 
     # Detect document type from caption
@@ -875,7 +924,8 @@ def handle_incoming_document(phone: str, entry: dict):
 
         file_bytes = download_whatsapp_media(media_id)
         if not file_bytes:
-            send_text(phone, "Failed to download the document. Please try sending it again.")
+            send_text(phone, "⚠️ Failed to download the document. Please try sending it again as a PDF.")
+            send_buttons(phone, "Need help?", AFTER_DOCUMENT)
             return
 
         file_path = save_document(phone, doc_type, filename, file_bytes)
@@ -884,7 +934,7 @@ def handle_incoming_document(phone: str, entry: dict):
 
         docs = get_user_documents(phone)
         send_text(phone, f"✅ *{doc_label} saved!*\n\n{format_documents_checklist(docs)}")
-        send_buttons(phone, "What's next?", MAIN_BUTTONS)
+        send_buttons(phone, "What's next?", AFTER_DOCUMENT)
 
     except Exception as e:
         print(f"[webhook] Document handling error: {e}")
@@ -1026,7 +1076,7 @@ def handle_buy_credits(phone: str):
         f"After payment, reply *PAID [amount]*\n"
         f"Example: *PAID 3000*"
     )
-    send_buttons(phone, "Questions?", ["View Tenders", "My Status", "Help"])
+    send_buttons(phone, "Questions?", AFTER_UPGRADE_PROMPT)
 
 
 def handle_paid_confirmation(phone: str, text: str):
@@ -1034,6 +1084,7 @@ def handle_paid_confirmation(phone: str, text: str):
         amount = int(text.lower().replace("paid", "").strip())
     except ValueError:
         send_text(phone, "Please specify the amount. Example: *PAID 75000*")
+        send_buttons(phone, "Need help?", AFTER_PAYMENT)
         return
 
     # Determine payment type, plan, and credits from amount
@@ -1312,7 +1363,8 @@ def process_webhook_entry(entry: dict):
 
     # Rate limiting
     if is_rate_limited(phone):
-        send_text(phone, "⚠️ You're sending messages too quickly. Please wait a few minutes before trying again.")
+        send_text(phone, "⚠️ You're sending messages too quickly. Please wait a moment before trying again.")
+        send_buttons(phone, "In the meantime:", ["My Status", "Help"])
         log_interaction(phone, "outbound", "text", "rate_limited", command="rate_limit")
         return
 

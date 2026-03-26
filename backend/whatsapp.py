@@ -217,9 +217,8 @@ def format_tender_alert(tenders: list[dict], subscriber_name: str = None) -> str
         lines.append(block)
 
     if len(tenders) > 5:
-        lines.append(f"\n_...and {len(tenders) - 5} more. Reply *LIST* to see more._")
+        lines.append(f"\n_...and {len(tenders) - 5} more._")
 
-    lines.append("\n_Reply *HELP* for commands | *STOP* to unsubscribe_")
     return "\n\n".join(lines)
 
 
@@ -686,10 +685,11 @@ def format_deep_analysis(analysis: dict, tender: dict, user_docs: list[dict] = N
     return messages
 
 
-def format_pipeline(items: list[dict]) -> str:
+def format_pipeline(items: list[dict], company_name: str = "") -> str:
     """Format the bid pipeline as a kanban-style text list."""
+    header = f"📋 *{company_name} — Bid Pipeline*" if company_name else "📋 *Your Bid Pipeline*"
     if not items:
-        return "Your bid pipeline is empty.\n\nUse *SAVE [tender_id]* after viewing a tender to start tracking it."
+        return f"{header}\n\n_No tenders tracked yet._\n\nView a tender and tap *Save to Pipeline* to start tracking."
 
     groups = {}
     for item in items:
@@ -699,7 +699,7 @@ def format_pipeline(items: list[dict]) -> str:
     status_emoji = {"watching": "👀", "preparing": "📝", "submitted": "📤", "won": "🏆", "lost": "❌"}
     status_order = ["watching", "preparing", "submitted", "won", "lost"]
 
-    lines = ["*📋 Your Bid Pipeline*\n"]
+    lines = [f"{header}\n"]
     for status in status_order:
         items_in_status = groups.get(status, [])
         if not items_in_status:
@@ -714,7 +714,7 @@ def format_pipeline(items: list[dict]) -> str:
                 lines.append(f"    ⏰ Deadline: {deadline}")
         lines.append("")
 
-    lines.append("_Reply UPDATE [id] [status] to change status_")
+    lines.append("_Type *UPDATE [tender] [status]* to change status_\n_Statuses: watching, preparing, submitted, won, lost_")
     return "\n".join(lines)
 
 
@@ -741,8 +741,7 @@ def format_documents_checklist(docs_on_file: list[dict]) -> str:
             lines.append(f"  ❌ {label}")
 
     lines.append(f"\n_{len(have)}/{len(DOCUMENT_TYPES)} documents uploaded_")
-    lines.append("\nSend a PDF with a caption (e.g. *rdb*, *rra*, *cv*) to upload.")
-    lines.append("Reply *DOCS* anytime to see this list.")
+    lines.append("\n📎 To upload: send a PDF with a caption like *rdb*, *rra*, *cv*, *profile*.")
     return "\n".join(lines)
 
 
@@ -763,5 +762,4 @@ def format_search_results(tenders: list[dict], keyword: str) -> str:
             f"   🔗 {t['source_url']}"
         )
 
-    lines.append("\n_Reply *LIST* for all recent tenders | *HELP* for commands_")
     return "\n\n".join(lines)
