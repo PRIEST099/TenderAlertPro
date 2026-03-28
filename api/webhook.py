@@ -12,6 +12,8 @@ Pure Python — no framework dependency. Called by api/routers/webhook.py.
 
 import sys
 import concurrent.futures
+import threading
+import time as _time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
@@ -1347,8 +1349,42 @@ def resolve_command(msg_type: str, content: str) -> str:
 
 # ── Main dispatcher ───────────────────────────────────────────────────────
 
+# ── Message deduplication (prevents Meta webhook retries) ──────────────
+_seen_msg_ids: dict[str, float] = {}
+_seen_lock = threading.Lock()
+
+
+def _is_duplicate(msg_id: str | None) -> bool:
+    """Return True if msg_id was already processed. Auto-cleans entries > 5 min old."""
+    if not msg_id:
+        return False
+    now = _time.time()
+    with _seen_lock:
+        stale = [k for k, v in _seen_msg_ids.items() if v < now - 300]
+        for k in stale:
+            del _seen_msg_ids[k]
+        if msg_id in _seen_msg_ids:
+            return True
+        _seen_msg_ids[msg_id] = now
+        return False
+
+
+def _extract_msg_id(entry: dict) -> str | None:
+    """Extract the WhatsApp message ID (wamid) from a webhook entry."""
+    try:
+        return entry["changes"][0]["value"]["messages"][0]["id"]
+    except (KeyError, IndexError):
+        return None
+
+
 def process_webhook_entry(entry: dict):
     """Process a single webhook entry. Called by the FastAPI route."""
+    # Dedup: skip if Meta retried this same message
+    msg_id = _extract_msg_id(entry)
+    if _is_duplicate(msg_id):
+        print(f"[webhook] Skipping duplicate message {msg_id}")
+        return
+
     phone = parse_phone(entry)
     if not phone:
         return

@@ -4,7 +4,7 @@ GET  /webhook  — verification handshake
 POST /webhook  — incoming messages
 """
 
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, BackgroundTasks, Request, Query
 from fastapi.responses import PlainTextResponse
 
 import sys
@@ -31,9 +31,12 @@ async def verify_webhook(
 
 
 @router.post("/webhook")
-async def receive_message(request: Request):
-    """Handle incoming WhatsApp events (messages + button taps)."""
+async def receive_message(request: Request, background_tasks: BackgroundTasks):
+    """Handle incoming WhatsApp events (messages + button taps).
+
+    Returns 200 immediately so Meta doesn't retry, then processes in background.
+    """
     data = await request.json()
     for entry in data.get("entry", []):
-        process_webhook_entry(entry)
+        background_tasks.add_task(process_webhook_entry, entry)
     return {"status": "ok"}
